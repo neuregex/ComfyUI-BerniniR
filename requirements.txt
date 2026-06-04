@@ -1,0 +1,9 @@
+# torch lo provee ComfyUI (no lo fijamos para no romper su build CUDA).
+# Versiones alineadas con la pila de Bernini-R (ByteDance).
+diffusers>=0.35.2
+transformers>=4.57.0
+accelerate>=0.34.2
+einops>=0.7.0
+ftfy>=6.1.0
+safetensors>=0.4.0
+sentencepiece>=0.2.0

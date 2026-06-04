@@ -1,0 +1,25 @@
+[project]
+name = "comfyui-berninir"
+description = "ByteDance Bernini-R (Wan2.2-T2V-A14B + source-id RoPE + APG multi-condition guidance) for ComfyUI: t2v/t2i, image & video editing, reference-to-video."
+version = "0.1.0"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "diffusers>=0.35.2",
+    "transformers>=4.57.0",
+    "accelerate>=0.34.2",
+    "einops>=0.7.0",
+    "ftfy>=6.1.0",
+    "safetensors>=0.4.0",
+    "sentencepiece>=0.2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/your-org/ComfyUI-BerniniR"
+"Upstream model" = "https://huggingface.co/ByteDance/Bernini-R"
+"Upstream code" = "https://github.com/bytedance/Bernini"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-BerniniR"
+Icon = ""

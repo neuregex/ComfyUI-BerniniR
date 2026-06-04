@@ -1,0 +1,81 @@
+# --- Pesos del modelo (NO commitear, ver CLAUDE.md) ---
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+Bernini-R-Diffusers/
+
+# --- Byte-compiled / optimizados / C extensions ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Distribución / packaging ---
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Entornos virtuales ---
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Test / coverage / caches ---
+.pytest_cache/
+.cache
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# --- Jupyter / IPython ---
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# --- IDEs / editores ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- SO ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs / temporales ---
+*.log
+*.tmp
