@@ -112,6 +112,37 @@ def smoke(fp8: bool = False):
           f"forward multi-stream corre sin NaN")
 
 
+def _make_test_landscape(path, w=848, h=848):
+    """Paisaje sintético determinista (cielo azul + suelo + sol + nubes + árbol +
+    casa) para validar i2i cualitativamente: tras 'make the sky a dramatic sunset'
+    el CIELO debe cambiar y el resto de la composición (horizonte, suelo, árbol,
+    casa, sol) conservarse. numpy/PIL solo se usan dentro (en el contenedor)."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    horizon = int(h * 0.58)
+    arr = np.zeros((h, w, 3), dtype=np.float32)
+    ys = np.arange(h)
+    t = (ys[:horizon] / max(horizon - 1, 1))[:, None]
+    arr[:horizon] = np.stack([70 + 120 * t, 130 + 95 * t, 210 + 35 * t], axis=-1)[:, 0, :][:, None, :]
+    tg = ((ys[horizon:] - horizon) / max(h - horizon - 1, 1))[:, None]
+    arr[horizon:] = np.stack([70 - 25 * tg, 150 - 55 * tg, 60 - 25 * tg], axis=-1)[:, 0, :][:, None, :]
+    img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+    d = ImageDraw.Draw(img)
+    sx, sy, sr = int(w * 0.72), int(h * 0.18), int(w * 0.06)
+    d.ellipse([sx - sr, sy - sr, sx + sr, sy + sr], fill=(255, 244, 200))           # sol
+    for cx, cy, cw in [(0.18, 0.14, 0.14), (0.44, 0.09, 0.11), (0.33, 0.24, 0.10)]:  # nubes
+        ex, ey, ew = int(w * cx), int(h * cy), int(w * cw)
+        d.ellipse([ex, ey, ex + ew, ey + int(ew * 0.5)], fill=(245, 245, 250))
+    tx = int(w * 0.27)                                                               # árbol
+    d.rectangle([tx - 11, horizon - 8, tx + 11, horizon + 78], fill=(82, 53, 33))
+    d.ellipse([tx - 70, horizon - 100, tx + 70, horizon + 28], fill=(34, 98, 46))
+    hx, hy = int(w * 0.6), horizon                                                   # casa
+    d.rectangle([hx, hy - 64, hx + 128, hy + 30], fill=(202, 182, 162))
+    d.polygon([(hx - 12, hy - 64), (hx + 140, hy - 64), (hx + 64, hy - 118)], fill=(150, 70, 60))
+    d.rectangle([hx + 48, hy - 18, hx + 80, hy + 30], fill=(92, 60, 40))
+    img.save(path)
+
+
 class _Comfy:
     """Cliente mínimo del servidor ComfyUI headless."""
     def __init__(self, port=8188):
@@ -144,7 +175,8 @@ class _Comfy:
 @app.function(image=image, gpu="A100-80GB", volumes={MODELS_DIR: MODELS, OUT_DIR: OUT},
               timeout=60 * 60, container_idle_timeout=60)
 def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
-        num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0):
+        num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0,
+        gen_input: str = ""):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
@@ -152,7 +184,13 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
 
     Overrides opcionales (0 = mantener el valor del JSON) para abaratar la primera
     corrida: --fp8 (cuantización del loader; por defecto bf16 puro),
-    --num-frames, --width, --height, --steps."""
+    --num-frames, --width, --height, --steps.
+
+    --gen-input <nombre.png>: genera un paisaje sintético de prueba en
+    ComfyUI/input/<nombre> (a la resolución efectiva del sampler) para los workflows
+    de edición que usan LoadImage; deja una copia en el Volume out como
+    i2i_input_used.png para comparar con el resultado."""
+    import shutil
     import time
     base = pathlib.Path("/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
     wf_path = pathlib.Path(workflow)
@@ -176,6 +214,21 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
                 ins["height"] = int(height)
             if steps:
                 ins["steps"] = int(steps)
+
+    # imagen de prueba para workflows de edición (LoadImage). Se genera a la
+    # resolución efectiva del sampler para que el latente de referencia y el target
+    # compartan rejilla espacial (el src-id distingue la MISMA posición por stream).
+    if gen_input:
+        samp = next((n["inputs"] for n in graph.values()
+                     if n.get("class_type") == "BerniniRSampler"), {})
+        eff_w, eff_h = int(samp.get("width", 848)), int(samp.get("height", 848))
+        inp_dir = pathlib.Path("/root/ComfyUI/input")
+        inp_dir.mkdir(parents=True, exist_ok=True)
+        dst = inp_dir / gen_input
+        _make_test_landscape(str(dst), eff_w, eff_h)
+        shutil.copy(str(dst), f"{OUT_DIR}/i2i_input_used.png")
+        print(f"[*] imagen de prueba {gen_input} {eff_w}x{eff_h} (copia en Volume out: i2i_input_used.png)")
+
     comfy = _Comfy()
     t0 = time.time()
     result = comfy.run(graph)
