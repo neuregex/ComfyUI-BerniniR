@@ -38,22 +38,28 @@ def quantize_fp8_(module, skip=("norm", "embed", "head", "modulation", "time_", 
 # Expertos (transformer / transformer_2)
 # --------------------------------------------------------------------------
 def load_experts(model_dir, dtype="bf16", fp8=False, device="cpu"):
-    """Carga los dos WanTransformer3DModel de un repo Bernini-R-Diffusers."""
+    """Carga los dos WanTransformer3DModel de un repo Bernini-R-Diffusers.
+
+    fp8=False -> bf16 PURO (sin cuantización M8): úsalo para validar fidelidad sin
+    la variable de la cuantización. Con `device` != "cpu" cada experto se mueve al
+    dispositivo JUSTO tras cargarse (no se mantienen los dos en RAM de CPU a la vez),
+    bajando el pico de RAM de CPU a ~1 experto (~28GB en bf16).
+    """
     from diffusers import WanTransformer3DModel
     td = _DT[dtype]
-    hi = WanTransformer3DModel.from_pretrained(model_dir, subfolder="transformer", torch_dtype=td)
-    lo = None
-    lo_dir = os.path.join(model_dir, "transformer_2")
-    if os.path.isdir(lo_dir):
-        lo = WanTransformer3DModel.from_pretrained(model_dir, subfolder="transformer_2", torch_dtype=td)
-    if fp8:
-        quantize_fp8_(hi)
-        if lo is not None:
-            quantize_fp8_(lo)
-    hi.eval().requires_grad_(False)
-    if lo is not None:
-        lo.eval().requires_grad_(False)
-    # En offload, ambos arrancan en CPU; el sampler sube el activo a GPU.
+
+    def _load(subfolder):
+        m = WanTransformer3DModel.from_pretrained(model_dir, subfolder=subfolder, torch_dtype=td)
+        if fp8:
+            quantize_fp8_(m)
+        m.eval().requires_grad_(False)
+        if str(device) != "cpu":
+            m.to(device)
+        return m
+
+    hi = _load("transformer")
+    lo = _load("transformer_2") if os.path.isdir(os.path.join(model_dir, "transformer_2")) else None
+    # En offload (device="cpu"), ambos arrancan en CPU; el sampler sube el activo a GPU.
     return hi, lo
 
 

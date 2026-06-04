@@ -96,11 +96,16 @@ class BerniniExpert(torch.nn.Module):
 
     @property
     def dtype(self):
-        return next(self.t.parameters()).dtype
+        # dtype de CÓMPUTO/IO = el de la conv de entrada (patch_embedding), NO
+        # next(parameters()): al cargar bf16, diffusers mantiene varios módulos en
+        # fp32 (_keep_in_fp32_modules: norms, time_embedder, scale_shift_table) y el
+        # primer parámetro iterado puede ser uno de esos fp32, lo que provocaría
+        # castear el latente a fp32 y chocar con la patch_embedding bf16.
+        return self.t.patch_embedding.weight.dtype
 
     @property
     def device(self):
-        return next(self.t.parameters()).device
+        return self.t.patch_embedding.weight.device
 
     # -- patch-embed de un stream -> (tokens [1,S,dim], rope [1,1,S,head/2]) ----
     def patch_stream(self, latent: torch.Tensor, source_id: int):

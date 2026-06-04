@@ -36,19 +36,32 @@ HERE = pathlib.Path(__file__).parent.parent  # carpeta del custom node
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0")
-    .pip_install("torch==2.5.1", "torchvision==0.20.1", index_url="https://download.pytorch.org/whl/cu124")
+    # torchaudio==2.5.1 EXPLÍCITO (trío cu124 consistente): ComfyUI importa torchaudio
+    # incondicionalmente (comfy.sd -> audio_vae). Si no lo fijamos aquí, el requirements
+    # de ComfyUI lo baja de PyPI con build CUDA 13 -> OSError libcudart.so.13 al arrancar.
+    .pip_install("torch==2.5.1", "torchvision==0.20.1", "torchaudio==2.5.1",
+                 index_url="https://download.pytorch.org/whl/cu124")
     .run_commands("git clone --depth 1 https://github.com/comfyanonymous/ComfyUI /root/ComfyUI")
     .run_commands("pip install -r /root/ComfyUI/requirements.txt")
-    .pip_install("diffusers>=0.35.2", "transformers>=4.57.0", "accelerate>=0.34.2",
+    # transformers==4.49.0: las >=4.56 referencian torch.float8_e8m0fnu (dtype MXFP8
+    # de torch>=2.7) en integrations/finegrained_fp8.py, y la imagen fija torch 2.5.1
+    # (sin ese dtype) -> import de diffusers.WanTransformer3DModel reventaba. 4.49.0
+    # es compatible con torch 2.5.1 y con diffusers 0.35.2 (que solo pide >=4.41.2),
+    # y trae UMT5EncoderModel + tokenizer para el text-encode del run.
+    .pip_install("diffusers==0.35.2", "transformers==4.49.0", "accelerate>=0.34.2",
                  "einops>=0.7.0", "ftfy>=6.1.0", "safetensors>=0.4.0",
                  "sentencepiece>=0.2.0", "huggingface_hub", "requests")
-    # monta el custom node (esta misma carpeta) en ComfyUI/custom_nodes
+    # monta el custom node (esta misma carpeta) en ComfyUI/custom_nodes.
+    # ignore: NO subir el venv local, caches, tests ni pesos (patrones dockerignore).
     .add_local_dir(str(HERE), "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR", copy=True,
-                   ignore=["modal", ".git", "__pycache__"])
+                   ignore=["modal", ".git", ".venv", ".pytest_cache", "tests",
+                           "__pycache__", "**/__pycache__",
+                           "*.safetensors", "**/*.safetensors", "Bernini-R-Diffusers"])
 )
 
 
-@app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60 * 4)
+@app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60 * 4,
+              container_idle_timeout=60)
 def download_weights(repo: str = "ByteDance/Bernini-R-Diffusers"):
     """Descarga el repo diffusers self-contained (vae+t5+tokenizer+2 transformers)."""
     from huggingface_hub import snapshot_download
@@ -59,11 +72,17 @@ def download_weights(repo: str = "ByteDance/Bernini-R-Diffusers"):
     print("[ok] pesos en el Volume")
 
 
-@app.function(image=image, gpu="H100", volumes={MODELS_DIR: MODELS}, timeout=60 * 30)
-def smoke():
-    """Validación numérica barata: carga UN experto (fp8), 1 forward t2v de
-    baja resolución, y comprueba shapes y ausencia de NaN. NO requiere los dos
-    expertos ni descargar 160GB completos si solo bajaste 'transformer'."""
+@app.function(image=image, gpu="A100-80GB", volumes={MODELS_DIR: MODELS}, timeout=60 * 30,
+              container_idle_timeout=60)
+def smoke(fp8: bool = False):
+    """Validación numérica: carga los DOS expertos reales y corre 1 forward
+    multi-stream t2v de baja resolución (2 steps que cruzan la frontera 875, así
+    que se ejercitan AMBOS expertos), comprobando shapes y ausencia de NaN.
+
+    Por defecto bf16 SIN fp8 (fidelidad sin la variable de cuantización M8); pasa
+    --fp8 para validar también el path cuantizado. En A100-80GB caben los dos
+    expertos bf16 (~28GB c/u) en VRAM a la vez."""
+    import time
     import torch
     import sys
     sys.path.insert(0, "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
@@ -71,20 +90,26 @@ def smoke():
     from bernini import latents as L
 
     md = f"{MODELS_DIR}/Bernini-R-Diffusers"
-    hi, lo = load_experts(md, dtype="bf16", fp8=True)
-    r = BerniniRenderer(high=BerniniExpert(hi), low=BerniniExpert(lo) if lo else None)
-    r.high.t.to("cuda")
+    t0 = time.time()
+    hi, lo = load_experts(md, dtype="bf16", fp8=fp8, device="cuda")
+    assert lo is not None, "no se cargó el 2º experto (transformer_2): ¿falta en el repo?"
+    r = BerniniRenderer(high=BerniniExpert(hi), low=BerniniExpert(lo))
+    print(f"[t] carga de los 2 expertos reales (bf16, fp8={fp8}): {time.time() - t0:.1f}s")
 
-    # text embeds ficticios [1,512,4096] (validación de forma, no de calidad)
+    # text embeds ficticios [1,512,4096] (validación de forma/estabilidad, no de calidad)
     pos = torch.zeros(1, 512, 4096, device="cuda", dtype=torch.bfloat16)
     neg = torch.zeros(1, 512, 4096, device="cuda", dtype=torch.bfloat16)
     shape = L.latent_shape(num_frames=5, height=128, width=128)
     s = BerniniSampler(r, "t2v", dict(num_inference_steps=2), offload_experts=False)
+    t1 = time.time()
     out = s.sample([], [], pos, neg, shape, device="cuda", seed=0,
                    base_scheduler_dir=f"{md}/scheduler")
-    print("salida:", tuple(out.shape), out.dtype, "NaN?", bool(torch.isnan(out).any()))
-    assert out.shape[1] == 16 and not torch.isnan(out).any(), "fallo de validación"
-    print("[ok] smoke test pasó — el forward multi-stream + sampler corre end-to-end")
+    print(f"[t] forward multi-stream (2 steps, ambos expertos): {time.time() - t1:.1f}s")
+    has_nan = bool(torch.isnan(out).any())
+    print("salida:", tuple(out.shape), out.dtype, "NaN?", has_nan)
+    assert out.shape[1] == 16 and not has_nan, "fallo de validación (shape o NaN)"
+    print(f"[ok] smoke (bf16, fp8={fp8}) pasó — los DOS expertos cargan y el "
+          f"forward multi-stream corre sin NaN")
 
 
 class _Comfy:
@@ -116,25 +141,47 @@ class _Comfy:
             time.sleep(2)
 
 
-@app.function(image=image, gpu="H100", volumes={MODELS_DIR: MODELS, OUT_DIR: OUT}, timeout=60 * 60)
-def run(workflow: str = "workflows/bernini_t2v.json"):
+@app.function(image=image, gpu="A100-80GB", volumes={MODELS_DIR: MODELS, OUT_DIR: OUT},
+              timeout=60 * 60, container_idle_timeout=60)
+def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
+        num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
-    workflows/bernini_t2v.json), que se copió a la imagen."""
+    workflows/bernini_t2v.json), que se copió a la imagen.
+
+    Overrides opcionales (0 = mantener el valor del JSON) para abaratar la primera
+    corrida: --fp8 (cuantización del loader; por defecto bf16 puro),
+    --num-frames, --width, --height, --steps."""
+    import time
     base = pathlib.Path("/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
     wf_path = pathlib.Path(workflow)
     if not wf_path.is_absolute():
         wf_path = base / workflow
     graph = json.loads(wf_path.read_text())
-    # apunta el model_dir de los nodos al Volume
+    # apunta el model_dir al Volume y aplica overrides por class_type
     for node in graph.values():
         ins = node.get("inputs", {})
+        ct = node.get("class_type", "")
         if "model_dir" in ins:
             ins["model_dir"] = f"{MODELS_DIR}/Bernini-R-Diffusers"
+        if ct == "BerniniRModelLoader":
+            ins["fp8"] = bool(fp8)
+        if ct == "BerniniRSampler":
+            if num_frames:
+                ins["num_frames"] = int(num_frames)
+            if width:
+                ins["width"] = int(width)
+            if height:
+                ins["height"] = int(height)
+            if steps:
+                ins["steps"] = int(steps)
     comfy = _Comfy()
+    t0 = time.time()
     result = comfy.run(graph)
     OUT.commit()
+    print(f"[t] workflow {workflow} (fp8={fp8}, frames={num_frames or 'json'}, "
+          f"{(width or '?')}x{(height or '?')}, steps={steps or 'json'}): {time.time() - t0:.1f}s")
     print("[ok] terminado. Outputs:", json.dumps(result.get("outputs", {}))[:500])
     print("Descarga con:  modal volume get berninir-out / ./outputs")
 
