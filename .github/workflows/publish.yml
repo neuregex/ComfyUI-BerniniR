@@ -1,0 +1,30 @@
+name: Publish to Comfy registry
+
+# Publica el custom node en https://registry.comfy.org cuando cambia pyproject.toml
+# (típicamente al subir la versión) en la rama por defecto, o manualmente.
+#
+# REQUISITOS antes de que esto funcione (ver README / instrucciones):
+#   1. [tool.comfy] PublisherId relleno en pyproject.toml (de registry.comfy.org).
+#   2. Secret de repo REGISTRY_ACCESS_TOKEN = API key creada en registry.comfy.org
+#      (Settings -> Secrets and variables -> Actions -> New repository secret).
+
+on:
+  workflow_dispatch:          # disparo manual desde la pestaña Actions
+  push:
+    branches:
+      - main
+      - master                # este repo usa 'master' por defecto
+    paths:
+      - "pyproject.toml"      # republica al cambiar versión/metadata
+
+jobs:
+  publish-node:
+    name: Publish Custom Node to registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Publish Custom Node
+        uses: Comfy-Org/publish-node-action@main
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

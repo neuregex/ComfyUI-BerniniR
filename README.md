@@ -1,5 +1,8 @@
 # ComfyUI-BerniniR
 
+[![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-comfyui--berninir-1971c2)](https://registry.comfy.org/nodes/comfyui-berninir)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 Soporte para **[ByteDance/Bernini-R](https://huggingface.co/ByteDance/Bernini-R)** en ComfyUI — texto-a-vídeo / texto-a-imagen, **edición** de imagen y vídeo, y **referencia-a-vídeo**, con la lógica propia de Bernini (source-id RoPE + guía APG multi-condición) reimplementada fielmente.
 
 > **El hallazgo clave:** Bernini-R **es** Wan2.2-T2V-A14B por dentro. Su `transformer/config.json` declara `"_class_name": "WanTransformer3DModel"` con la config idéntica de A14B (40 capas, 40 heads, ffn 13824, 16 canales), VAE `AutoencoderKLWan` y text encoder UMT5. Las **claves de pesos son 100% Wan estándar** — no hay tensores extra. Todo lo que distingue a Bernini vive en el **código de inferencia**, no en parámetros nuevos. Este paquete reimplementa ese código sobre los módulos de `diffusers` ya probados.

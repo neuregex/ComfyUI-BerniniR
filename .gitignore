@@ -79,3 +79,10 @@ desktop.ini
 # --- Logs / temporales ---
 *.log
 *.tmp
+
+# salidas de validación (descargadas del Volume Modal)
+resultados/
+
+# --- Archivos locales de herramientas/dev (no forman parte del paquete) ---
+CLAUDE.md
+.claude/
