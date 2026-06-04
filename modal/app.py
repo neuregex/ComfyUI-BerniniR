@@ -17,6 +17,7 @@ Uso
 Salidas en el Volume 'berninir-out' (descárgalas con `modal volume get`).
 """
 import json
+import os
 import pathlib
 import subprocess
 import time
@@ -31,6 +32,14 @@ OUT = modal.Volume.from_name("berninir-out", create_if_missing=True)
 MODELS_DIR = "/models"
 OUT_DIR = "/out"
 HERE = pathlib.Path(__file__).parent.parent  # carpeta del custom node
+
+# GPU parametrizable por env var (leída al DEFINIR la app, en el cliente local):
+#   $env:BERNINIR_GPU="A10G"; modal run modal/app.py::run ...   -> prueba en 24GB
+# Default A100-80GB (caben 2 expertos bf16). Para el objetivo ≤24GB usar L4/A10G.
+GPU = os.environ.get("BERNINIR_GPU", "A100-80GB")
+# RAM de CPU: cargar 2 expertos pasa por bf16 (~28GB c/u) antes de cuantizar a fp8,
+# con pico ~42GB al cargar el 2º. Reservamos holgura para no OOMear en CPU.
+CPU_MEM = int(os.environ.get("BERNINIR_CPU_MEM", "49152"))
 
 # Imagen: CUDA 12.4 + torch 2.5.1 (alineado con la pila de Bernini-R) + ComfyUI
 image = (
@@ -72,8 +81,8 @@ def download_weights(repo: str = "ByteDance/Bernini-R-Diffusers"):
     print("[ok] pesos en el Volume")
 
 
-@app.function(image=image, gpu="A100-80GB", volumes={MODELS_DIR: MODELS}, timeout=60 * 30,
-              container_idle_timeout=60)
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 30,
+              container_idle_timeout=60, memory=CPU_MEM)
 def smoke(fp8: bool = False):
     """Validación numérica: carga los DOS expertos reales y corre 1 forward
     multi-stream t2v de baja resolución (2 steps que cruzan la frontera 875, así
@@ -172,8 +181,8 @@ class _Comfy:
             time.sleep(2)
 
 
-@app.function(image=image, gpu="A100-80GB", volumes={MODELS_DIR: MODELS, OUT_DIR: OUT},
-              timeout=60 * 60, container_idle_timeout=60)
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT},
+              timeout=60 * 60, container_idle_timeout=60, memory=CPU_MEM)
 def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0,
         gen_input: str = ""):
@@ -229,6 +238,18 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         shutil.copy(str(dst), f"{OUT_DIR}/i2i_input_used.png")
         print(f"[*] imagen de prueba {gen_input} {eff_w}x{eff_h} (copia en Volume out: i2i_input_used.png)")
 
+    # activa el reporte de pico de VRAM en los nodos (el subproceso de ComfyUI
+    # hereda este env); nodes.py imprime torch.cuda.max_memory_allocated().
+    os.environ["BERNINIR_REPORT_VRAM"] = "1"
+    # device REAL (no el string GPU del módulo: en el contenedor se re-importa
+    # app.py sin la env var BERNINIR_GPU, así que GPU caería al default y mentiría).
+    try:
+        import torch
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_total = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+        print(f"[*] GPU real: {gpu_name} ({gpu_total:.1f}GB)  (objetivo ≤24GB)")
+    except Exception as e:
+        print(f"[*] GPU real: ? ({e})")
     comfy = _Comfy()
     t0 = time.time()
     result = comfy.run(graph)

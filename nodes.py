@@ -23,6 +23,19 @@ except Exception:  # fuera de ComfyUI (tests)
         return torch.device("cpu")
 
 
+def _report_vram(tag):
+    """Reporte de VRAM gated por env (BERNINIR_REPORT_VRAM); silencioso por
+    defecto. max_memory_allocated()/reserved() son picos desde el inicio del
+    proceso -> el último reporte da el pico global del pipeline (objetivo ≤24GB)."""
+    if not os.environ.get("BERNINIR_REPORT_VRAM") or not torch.cuda.is_available():
+        return
+    torch.cuda.synchronize()
+    g = 1024 ** 3
+    print(f"[BerniniR][VRAM] {tag}: alloc={torch.cuda.memory_allocated()/g:.2f}GB "
+          f"pico_alloc={torch.cuda.max_memory_allocated()/g:.2f}GB "
+          f"pico_reserved={torch.cuda.max_memory_reserved()/g:.2f}GB", flush=True)
+
+
 # Tipos personalizados (se pasan tal cual entre nodos):
 #   BR_MODEL = BerniniRenderer ; BR_VAE = AutoencoderKLWan
 #   BR_COND  = {"pos","neg","task_type"} ; BR_SRC = {"video_latents","image_latents"}
@@ -107,6 +120,7 @@ class BerniniRTextEncode:
         neg = te.encode(negative_prompt, system_prefix="")   # el negativo NO lleva prefijo
         del te
         torch.cuda.empty_cache()
+        _report_vram("tras text-encode UMT5 (liberado antes de cargar expertos)")
         return ({"pos": pos.cpu(), "neg": neg.cpu(), "task_type": task_type},)
 
 
@@ -197,6 +211,7 @@ class BerniniRSampler:
             video_latents=video_latents, image_latents=image_latents,
             text_pos=cond["pos"].to(dev), text_neg=cond["neg"].to(dev),
             target_shape=target_shape, device=dev, seed=seed, base_scheduler_dir=base_sched)
+        _report_vram(f"tras sample ({mode}, fp8={model.get('offload')}/offload, {target_shape[2]}x{target_shape[3]}x{target_shape[4]})")
         return ({"samples": latent.cpu()},)
 
 
@@ -218,6 +233,7 @@ class BerniniRDecode:
         vae.to(_offload_device())
         frames = (frames.clamp(-1, 1) + 1.0) / 2.0
         frames = frames[0].permute(1, 2, 3, 0).float().cpu()   # [T,H,W,C]
+        _report_vram("tras decode (pico TOTAL del pipeline)")
         return (frames,)
 
 
