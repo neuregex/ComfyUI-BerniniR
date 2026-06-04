@@ -23,3 +23,9 @@ Repository = "https://github.com/your-org/ComfyUI-BerniniR"
 PublisherId = ""
 DisplayName = "ComfyUI-BerniniR"
 Icon = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# importlib: importa cada archivo de test por ruta, sin manipular sys.path ni
+# tratar la raíz del repo (que tiene __init__.py de custom node) como paquete.
+addopts = "--import-mode=importlib"
