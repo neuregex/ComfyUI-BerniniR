@@ -1,0 +1,13 @@
+# Excluye del paquete publicado al ComfyUI Registry lo que NO es runtime del nodo.
+# Sintaxis = .gitignore (capa sobre .gitignore; lo no-trackeado ya queda fuera).
+#
+# `modal/` es un harness de validación en GPU serverless: usa subprocess, urllib,
+# snapshot_download y "pip install". No forma parte del nodo de ComfyUI y dispara
+# las heurísticas del scanner de seguridad del registry -> se excluye del zip.
+modal/
+
+# Tests de desarrollo (CPU, modelos diminutos): no se ejecutan en runtime.
+tests/
+
+# CI de GitHub: no aporta nada al paquete instalable.
+.github/
