@@ -72,24 +72,71 @@ def quantize_fp8_(module, skip=FP8_SKIP):
     return apply_fp8_forward_(module)
 
 
+def _is_fp8_repo(model_dir, subfolder):
+    """True si los safetensors de model_dir/subfolder tienen algún tensor en e4m3
+    (es decir, es un bundle PRE-cuantizado tipo Bernini-R-fp8)."""
+    import glob
+    shards = sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors")))
+    if not shards or _fp8_dtype() is None:
+        return False
+    try:
+        from safetensors import safe_open
+        with safe_open(shards[0], framework="pt") as f:
+            for k in f.keys():
+                if "F8_E4M3" in f.get_slice(k).get_dtype():
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _load_prefp8(model_dir, subfolder):
+    """Carga un WanTransformer3DModel PRE-fp8 preservando el dtype e4m3 del disco:
+    init_empty_weights (sin tocar buffers no persistentes como el rope) +
+    load_state_dict(assign=True) -> los params toman el dtype EXACTO del checkpoint;
+    luego apply_fp8_forward_ parchea solo los Linear fp8."""
+    import glob
+    from accelerate import init_empty_weights
+    from safetensors.torch import load_file
+    from diffusers import WanTransformer3DModel
+
+    config = WanTransformer3DModel.load_config(model_dir, subfolder=subfolder)
+    with init_empty_weights(include_buffers=False):
+        m = WanTransformer3DModel.from_config(config)
+    sd = {}
+    for shard in sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors"))):
+        sd.update(load_file(shard))
+    missing, unexpected = m.load_state_dict(sd, strict=False, assign=True)
+    if missing:
+        print(f"[BerniniR] fp8 load {subfolder}: {len(missing)} missing (ej: {missing[:2]})")
+    if unexpected:
+        print(f"[BerniniR] fp8 load {subfolder}: {len(unexpected)} unexpected (ej: {unexpected[:2]})")
+    apply_fp8_forward_(m)
+    print(f"[BerniniR] {subfolder}: cargado PRE-fp8 (e4m3 del disco preservado)")
+    return m
+
+
 # --------------------------------------------------------------------------
 # Expertos (transformer / transformer_2)
 # --------------------------------------------------------------------------
 def load_experts(model_dir, dtype="bf16", fp8=False, device="cpu"):
-    """Carga los dos WanTransformer3DModel de un repo Bernini-R-Diffusers.
+    """Carga los dos WanTransformer3DModel de un repo Bernini-R(-fp8).
 
-    fp8=False -> bf16 PURO (sin cuantización M8): úsalo para validar fidelidad sin
-    la variable de la cuantización. Con `device` != "cpu" cada experto se mueve al
-    dispositivo JUSTO tras cargarse (no se mantienen los dos en RAM de CPU a la vez),
-    bajando el pico de RAM de CPU a ~1 experto (~28GB en bf16).
+    Detecta automáticamente si el repo ya está en fp8 (e4m3 en disco): en ese caso
+    PRESERVA el fp8 (no re-castea). Si no, camino bf16 y, con fp8=True, cuantiza
+    on-the-fly. Con `device` != "cpu" mueve cada experto al cargarse (pico de RAM de
+    CPU ~1 experto). dtype solo aplica al camino bf16.
     """
     from diffusers import WanTransformer3DModel
     td = _DT[dtype]
 
     def _load(subfolder):
-        m = WanTransformer3DModel.from_pretrained(model_dir, subfolder=subfolder, torch_dtype=td)
-        if fp8:
-            quantize_fp8_(m)
+        if _is_fp8_repo(model_dir, subfolder):
+            m = _load_prefp8(model_dir, subfolder)          # preserva e4m3
+        else:
+            m = WanTransformer3DModel.from_pretrained(model_dir, subfolder=subfolder, torch_dtype=td)
+            if fp8:
+                quantize_fp8_(m)                            # cuantiza on-the-fly
         m.eval().requires_grad_(False)
         if str(device) != "cpu":
             m.to(device)
