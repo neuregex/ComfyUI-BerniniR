@@ -97,14 +97,21 @@ def build_fp8(src: str = "Bernini-R-Diffusers", dst: str = "Bernini-R-fp8"):
 
 
 @app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60 * 3,
-              container_idle_timeout=60, secrets=[modal.Secret.from_name("huggingface")])
+              container_idle_timeout=60, secrets=[modal.Secret.from_name("hf-secret")])
 def upload_fp8(repo: str = "neuregex/Bernini-R-fp8", src: str = "Bernini-R-fp8"):
     """Sube el bundle fp8 del Volume a HuggingFace: create_repo + model card +
-    upload_large_folder (resumible). Requiere un Modal secret 'huggingface' con
-    HF_TOKEN (write). El bundle no pasa por tu máquina (se sube desde Modal)."""
+    upload_large_folder (resumible). Usa el Modal secret 'hf-secret' (token write).
+    El bundle no pasa por tu máquina (se sube desde Modal)."""
     import os
     from huggingface_hub import create_repo, login, upload_large_folder
-    token = os.environ["HF_TOKEN"]
+    # el token puede venir con distintos nombres según cómo se creó el secret
+    token = next((os.environ[k] for k in (
+        "HF_TOKEN", "HUGGINGFACE_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_API_TOKEN")
+        if os.environ.get(k)), None)
+    if not token:
+        hfvars = [k for k in os.environ if "HF" in k.upper() or "HUGG" in k.upper()]
+        raise RuntimeError(f"hf-secret no expone un token HF reconocible. Vars HF en el secret: {hfvars}")
     login(token=token, add_to_git_credential=False)
     folder = f"{MODELS_DIR}/{src}"
     # model card -> README.md del bundle
