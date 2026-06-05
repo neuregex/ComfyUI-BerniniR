@@ -118,19 +118,31 @@ _ST_DTYPE = {
 }
 
 
-def _manual_load(path):
-    """Carga un .safetensors SIN usar safetensors.torch.load_file: lee cada tensor como
-    bytes y lo reinterpreta (uint8 -> view(dtype) -> reshape). Esquiva la materialización
-    fp8 de safetensors, que en ciertos stacks (visto: torch 2.8 + safetensors 0.7, Windows)
-    segfaultea con 'access violation' en torch/storage.py al construir tensores F8_E4M3.
-    Más lento (bucle en Python sobre ~1000 tensores) pero a prueba de balas; sin mmap."""
+def _manual_load(path, keep):
+    """Lee un .safetensors a mano vía mmap PEREZOSO y reinterpreta cada tensor
+    (uint8 -> view(dtype) -> reshape). Logra dos cosas a la vez:
+      - Esquiva la construcción fp8 de safetensors.torch.load_file, que en torch 2.8 +
+        safetensors 0.7 (Windows) segfaultea ('access violation') con los F8_E4M3.
+      - NO copia el archivo a RAM: los tensores COMPARTEN el mmap (perezoso), igual que
+        hacía load_file. Clonar 14GB por experto hacía MemoryError en equipos con poca RAM.
+    `keep` mantiene vivos el mmap y el file mientras existan los tensores (los respaldan)."""
     import json
+    import mmap as _mmap
     import struct
+    import warnings
+    f = open(path, "rb")
+    n = struct.unpack("<Q", f.read(8))[0]
+    header = json.loads(f.read(n))
+    base = 8 + n
+    try:
+        mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_COPY)   # COW: perezoso + escribible
+    except (OSError, ValueError):
+        mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_READ)   # fallback solo-lectura
+    keep.append(f)
+    keep.append(mm)
     out = {}
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        header = json.loads(f.read(n))
-        base = 8 + n
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")   # frombuffer puede avisar de buffer no-escribible
         for name, meta in header.items():
             if name == "__metadata__":
                 continue
@@ -141,16 +153,14 @@ def _manual_load(path):
             s, e = meta["data_offsets"]
             shape = meta["shape"]
             if e > s:
-                f.seek(base + s)
-                raw = bytearray(f.read(e - s))                  # mutable -> tensor escribible
-                t = torch.frombuffer(raw, dtype=torch.uint8).view(dt)
-                out[name] = (t.reshape(shape) if shape else t.reshape(())).clone()
+                t = torch.frombuffer(mm, dtype=torch.uint8, count=e - s, offset=base + s).view(dt)
+                out[name] = t.reshape(shape) if shape else t.reshape(())
             else:
-                out[name] = torch.empty(shape, dtype=dt)        # tensor vacío
+                out[name] = torch.empty(shape, dtype=dt)          # tensor vacío
     return out
 
 
-def _safe_load(shard):
+def _safe_load(shard, keep):
     """Verifica que el .safetensors no esté truncado (error claro en vez de segfault) y
     materializa los tensores A MANO (_manual_load) para esquivar el bug de carga fp8 de
     safetensors. `load_file` mapearía el archivo y, en torch 2.8 + safetensors 0.7
@@ -168,7 +178,7 @@ def _safe_load(shard):
             f"{actual:,} bytes pero su header espera {expected:,} ({100*actual/expected:.1f}%). "
             f"La descarga quedó a medias. Borra ese archivo (o toda la carpeta del repo) y "
             f"re-ejecuta con auto_download (es resumible); idealmente con HF_HUB_DISABLE_XET=1.")
-    return _manual_load(shard)
+    return _manual_load(shard, keep)
 
 
 def _load_prefp8(model_dir, subfolder):
@@ -184,9 +194,11 @@ def _load_prefp8(model_dir, subfolder):
     with init_empty_weights(include_buffers=False):
         m = WanTransformer3DModel.from_config(config)
     sd = {}
+    keep = []
     for shard in sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors"))):
-        sd.update(_safe_load(shard))
+        sd.update(_safe_load(shard, keep))
     missing, unexpected = m.load_state_dict(sd, strict=False, assign=True)
+    m._bernini_keep = keep   # mantiene vivos mmap+file mientras viva el modelo
     if missing:
         print(f"[BerniniR] fp8 load {subfolder}: {len(missing)} missing (ej: {missing[:2]})")
     if unexpected:
