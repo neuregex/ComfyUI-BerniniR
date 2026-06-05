@@ -2,7 +2,9 @@
   "1": {
     "class_type": "BerniniRModelLoader",
     "inputs": {
-      "model_dir": "Bernini-R-Diffusers",
+      "source": "neuregex/Bernini-R-fp8 (auto)",
+      "auto_download": true,
+      "download_dir": "models/bernini",
       "dtype": "bf16",
       "fp8": true,
       "offload_experts": true

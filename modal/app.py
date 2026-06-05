@@ -185,7 +185,8 @@ class _Comfy:
               timeout=60 * 60, container_idle_timeout=60, memory=CPU_MEM)
 def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0,
-        gen_input: str = ""):
+        gen_input: str = "", src_video: str = "", prompt: str = "",
+        model_subdir: str = "Bernini-R-Diffusers"):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
@@ -198,7 +199,12 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
     --gen-input <nombre.png>: genera un paisaje sintético de prueba en
     ComfyUI/input/<nombre> (a la resolución efectiva del sampler) para los workflows
     de edición que usan LoadImage; deja una copia en el Volume out como
-    i2i_input_used.png para comparar con el resultado."""
+    i2i_input_used.png para comparar con el resultado.
+
+    --src-video <archivo>: copia ese archivo DESDE el Volume out a ComfyUI/input
+    y apunta el nodo BerniniRLoadVideo a él (para validar v2v/rv2v reusando un
+    vídeo ya generado, p.ej. BerniniR_00001_.webp).
+    --prompt "<texto>": sobreescribe el prompt del BerniniRTextEncode."""
     import shutil
     import time
     base = pathlib.Path("/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
@@ -211,8 +217,12 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         ins = node.get("inputs", {})
         ct = node.get("class_type", "")
         if "model_dir" in ins:
-            ins["model_dir"] = f"{MODELS_DIR}/Bernini-R-Diffusers"
+            ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
         if ct == "BerniniRModelLoader":
+            # en Modal usamos los pesos del Volume, no descargamos de HF
+            ins["source"] = "local"
+            ins["auto_download"] = False
+            ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
             ins["fp8"] = bool(fp8)
         if ct == "BerniniRSampler":
             if num_frames:
@@ -223,6 +233,10 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
                 ins["height"] = int(height)
             if steps:
                 ins["steps"] = int(steps)
+        if ct == "BerniniRLoadVideo" and src_video:
+            ins["video"] = pathlib.Path(src_video).name
+        if ct == "BerniniRTextEncode" and prompt:
+            ins["prompt"] = prompt
 
     # imagen de prueba para workflows de edición (LoadImage). Se genera a la
     # resolución efectiva del sampler para que el latente de referencia y el target
@@ -237,6 +251,15 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         _make_test_landscape(str(dst), eff_w, eff_h)
         shutil.copy(str(dst), f"{OUT_DIR}/i2i_input_used.png")
         print(f"[*] imagen de prueba {gen_input} {eff_w}x{eff_h} (copia en Volume out: i2i_input_used.png)")
+
+    # vídeo fuente para v2v/rv2v: copia un archivo del Volume out -> ComfyUI/input
+    # (el nodo BerniniRLoadVideo lo lee por nombre, ya parcheado arriba).
+    if src_video:
+        inp_dir = pathlib.Path("/root/ComfyUI/input")
+        inp_dir.mkdir(parents=True, exist_ok=True)
+        dst_v = inp_dir / pathlib.Path(src_video).name
+        shutil.copy(f"{OUT_DIR}/{src_video}", str(dst_v))
+        print(f"[*] source video {src_video} -> {dst_v}")
 
     # activa el reporte de pico de VRAM en los nodos (el subproceso de ComfyUI
     # hereda este env); nodes.py imprime torch.cuda.max_memory_allocated().

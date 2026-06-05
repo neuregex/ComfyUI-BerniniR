@@ -48,14 +48,100 @@ def _img_to_video(images: torch.Tensor) -> torch.Tensor:
     return x * 2.0 - 1.0
 
 
+# Fuentes de pesos: combo del widget -> repo HF (o "local").
+_HF_REPOS = {
+    "neuregex/Bernini-R-fp8 (auto)": "neuregex/Bernini-R-fp8",
+    "ByteDance/Bernini-R-Diffusers (full bf16)": "ByteDance/Bernini-R-Diffusers",
+}
+
+
+def _has_weights(d):
+    import glob
+    return bool(glob.glob(os.path.join(d, "transformer", "*.safetensors")))
+
+
+def _resolve_dir(p):
+    """Ruta absoluta; relativa se ancla al base_path de ComfyUI (o cwd)."""
+    p = os.path.expanduser(p)
+    if os.path.isabs(p):
+        return p
+    try:
+        import folder_paths
+        return os.path.join(folder_paths.base_path, p)
+    except Exception:
+        return os.path.abspath(p)
+
+
+def _comfy_tqdm():
+    """tqdm que además refleja el progreso en la barra de ComfyUI (best-effort)."""
+    try:
+        from comfy.utils import ProgressBar
+        from tqdm import tqdm as _tqdm
+    except Exception:
+        return None
+
+    class _PBTqdm(_tqdm):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._pb = ProgressBar(self.total) if getattr(self, "total", None) else None
+
+        def update(self, n=1):
+            super().update(n)
+            try:
+                if self._pb and self.total:
+                    self._pb.update_absolute(self.n, self.total)
+            except Exception:
+                pass
+    return _PBTqdm
+
+
+def _ensure_weights(repo_id, dst, auto_download):
+    """Garantiza pesos en `dst`; si faltan y auto_download, los baja de HF con
+    check de espacio + aviso + progreso (tqdm/ProgressBar). Si no, raise claro."""
+    if _has_weights(dst):
+        return dst
+    if not auto_download:
+        raise FileNotFoundError(
+            f"[BerniniR] Faltan pesos de '{repo_id}' en {dst}. Activa auto_download, o "
+            f"descárgalos a mano:\n  huggingface-cli download {repo_id} --local-dir \"{dst}\"")
+    import shutil as _sh
+    from huggingface_hub import snapshot_download
+    parent = os.path.dirname(dst) or "."
+    os.makedirs(parent, exist_ok=True)
+    free_gb = _sh.disk_usage(parent).free / (1024 ** 3)
+    need_gb = 40 if "fp8" in repo_id.lower() else 130
+    print(f"[BerniniR] descargando '{repo_id}' -> {dst}  (~{need_gb}GB el PRIMER run; "
+          f"{free_gb:.0f}GB libres en {parent})")
+    if free_gb < need_gb * 1.1:
+        raise RuntimeError(
+            f"[BerniniR] espacio insuficiente para '{repo_id}': ~{int(need_gb * 1.1)}GB "
+            f"necesarios, solo {free_gb:.0f}GB libres en {parent}.")
+    os.makedirs(dst, exist_ok=True)
+    kw = {}
+    tq = _comfy_tqdm()
+    if tq is not None:
+        kw["tqdm_class"] = tq
+    snapshot_download(repo_id=repo_id, local_dir=dst, **kw)
+    if not _has_weights(dst):
+        raise RuntimeError(f"[BerniniR] descarga incompleta: sin transformer/*.safetensors en {dst}")
+    print(f"[BerniniR] descarga completa: {dst}")
+    return dst
+
+
 class BerniniRModelLoader:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Carpeta del repo ByteDance/Bernini-R-Diffusers"}),
+            "source": (list(_HF_REPOS.keys()) + ["local"],
+                       {"default": "neuregex/Bernini-R-fp8 (auto)",
+                        "tooltip": "fp8 (~40GB, cabe en 24GB) / bf16 full (~126GB) / local (usa model_dir)."}),
+            "auto_download": ("BOOLEAN", {"default": True, "tooltip": "Descarga el repo si falta (snapshot_download de HF)."}),
+            "download_dir": ("STRING", {"default": "models/bernini", "tooltip": "Carpeta de descarga (relativa a ComfyUI o absoluta)."}),
             "dtype": (["bf16", "fp16"], {"default": "bf16"}),
-            "fp8": ("BOOLEAN", {"default": True, "tooltip": "Cuantiza expertos a fp8 (~14GB c/u). Necesario para ≤24GB."}),
+            "fp8": ("BOOLEAN", {"default": True, "tooltip": "Cuantiza on-the-fly a fp8 si el repo es bf16 (el bundle fp8 ya viene cuantizado)."}),
             "offload_experts": ("BOOLEAN", {"default": True, "tooltip": "Mantén solo el experto activo en GPU (high/low se intercambian)."}),
+        }, "optional": {
+            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Ruta local de los pesos (solo si source='local')."}),
         }}
 
     RETURN_TYPES = ("BR_MODEL",)
@@ -63,9 +149,17 @@ class BerniniRModelLoader:
     FUNCTION = "load"
     CATEGORY = "BerniniR"
 
-    def load(self, model_dir, dtype, fp8, offload_experts):
-        model_dir = os.path.expanduser(model_dir)
-        hi, lo = load_experts(model_dir, dtype=dtype, fp8=fp8, device="cpu")
+    def load(self, source, auto_download, download_dir, dtype, fp8, offload_experts,
+             model_dir="Bernini-R-Diffusers"):
+        if source == "local":
+            resolved = _resolve_dir(model_dir)
+            if not _has_weights(resolved):
+                raise FileNotFoundError(f"[BerniniR] No hay pesos en {resolved} (transformer/*.safetensors).")
+        else:
+            repo_id = _HF_REPOS[source]
+            resolved = os.path.join(_resolve_dir(download_dir), repo_id.split("/")[-1])
+            _ensure_weights(repo_id, resolved, auto_download)
+        hi, lo = load_experts(resolved, dtype=dtype, fp8=fp8, device="cpu")
         renderer = BerniniRenderer(
             high=BerniniExpert(hi, use_src_id_rotary_emb=True),
             low=BerniniExpert(lo, use_src_id_rotary_emb=True) if lo is not None else None,
@@ -75,8 +169,8 @@ class BerniniRModelLoader:
             if renderer.low is not None:
                 renderer.low.t.to(_device())
         renderer._offload = offload_experts
-        renderer._model_dir = model_dir
-        return ({"renderer": renderer, "offload": offload_experts, "model_dir": model_dir},)
+        renderer._model_dir = resolved
+        return ({"renderer": renderer, "offload": offload_experts, "model_dir": resolved},)
 
 
 class BerniniRVAELoader:
@@ -211,7 +305,7 @@ class BerniniRSampler:
             video_latents=video_latents, image_latents=image_latents,
             text_pos=cond["pos"].to(dev), text_neg=cond["neg"].to(dev),
             target_shape=target_shape, device=dev, seed=seed, base_scheduler_dir=base_sched)
-        _report_vram(f"tras sample ({mode}, fp8={model.get('offload')}/offload, {target_shape[2]}x{target_shape[3]}x{target_shape[4]})")
+        _report_vram(f"tras sample ({mode}, offload={model.get('offload')}, {target_shape[2]}x{target_shape[3]}x{target_shape[4]})")
         return ({"samples": latent.cpu()},)
 
 
@@ -237,11 +331,48 @@ class BerniniRDecode:
         return (frames,)
 
 
+class BerniniRLoadVideo:
+    """Carga frames de un vídeo animado (webp/gif) desde ComfyUI/input como un batch
+    IMAGE [T,H,W,C] en 0..1. Autocontenido (PIL) — NO depende de VideoHelperSuite.
+    Para mp4/avi usa VHS_LoadVideo u otro loader y conéctalo igual a source_video."""
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "video": ("STRING", {"default": "source.webp", "tooltip": "Archivo en ComfyUI/input (webp o gif animado)"}),
+            "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 1024, "tooltip": "Máximo de frames (0 = todos)"}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("frames",)
+    FUNCTION = "load"
+    CATEGORY = "BerniniR"
+
+    def load(self, video, frame_load_cap=0):
+        import numpy as np
+        from PIL import Image, ImageSequence
+        try:
+            import folder_paths
+            base = folder_paths.get_input_directory()
+        except Exception:
+            base = "input"
+        path = video if os.path.isabs(video) else os.path.join(base, video)
+        im = Image.open(path)
+        frames = []
+        for i, fr in enumerate(ImageSequence.Iterator(im)):
+            if frame_load_cap and i >= frame_load_cap:
+                break
+            frames.append(np.asarray(fr.convert("RGB"), dtype=np.float32) / 255.0)
+        if not frames:
+            raise ValueError(f"BerniniRLoadVideo: sin frames en {path}")
+        return (torch.from_numpy(np.stack(frames, axis=0)),)   # [T,H,W,C]
+
+
 NODE_CLASS_MAPPINGS = {
     "BerniniRModelLoader": BerniniRModelLoader,
     "BerniniRVAELoader": BerniniRVAELoader,
     "BerniniRTextEncode": BerniniRTextEncode,
     "BerniniRSourceMedia": BerniniRSourceMedia,
+    "BerniniRLoadVideo": BerniniRLoadVideo,
     "BerniniRSampler": BerniniRSampler,
     "BerniniRDecode": BerniniRDecode,
 }
@@ -251,6 +382,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BerniniRVAELoader": "BerniniR · Load VAE (Wan)",
     "BerniniRTextEncode": "BerniniR · Text Encode (UMT5 + task prefix)",
     "BerniniRSourceMedia": "BerniniR · Encode Source/Reference",
+    "BerniniRLoadVideo": "BerniniR · Load Video (webp/gif, no VHS)",
     "BerniniRSampler": "BerniniR · Sampler (src-id RoPE + APG)",
     "BerniniRDecode": "BerniniR · VAE Decode",
 }

@@ -2,7 +2,9 @@
   "1": {
     "class_type": "BerniniRModelLoader",
     "inputs": {
-      "model_dir": "Bernini-R-Diffusers",
+      "source": "neuregex/Bernini-R-fp8 (auto)",
+      "auto_download": true,
+      "download_dir": "models/bernini",
       "dtype": "bf16",
       "fp8": true,
       "offload_experts": true
@@ -83,13 +85,10 @@
     }
   },
   "8": {
-    "class_type": "VHS_LoadVideo",
+    "class_type": "BerniniRLoadVideo",
     "inputs": {
-      "video": "source.mp4",
-      "force_rate": 16,
-      "frame_load_cap": 81,
-      "skip_first_frames": 0,
-      "select_every_nth": 1
+      "video": "source.webp",
+      "frame_load_cap": 81
     }
   },
   "9": {
