@@ -73,21 +73,28 @@ def quantize_fp8_(module, skip=FP8_SKIP):
 
 
 def _is_fp8_repo(model_dir, subfolder):
-    """True si los safetensors de model_dir/subfolder tienen algún tensor en e4m3
-    (es decir, es un bundle PRE-cuantizado tipo Bernini-R-fp8)."""
+    """True si los safetensors de model_dir/subfolder tienen algún tensor F8_E4M3
+    (bundle PRE-cuantizado tipo Bernini-R-fp8). Lee SOLO el header JSON del primer shard
+    (unos KB; sin safe_open ni mmap) -> determinista y robusto. La versión anterior usaba
+    safe_open y, bajo presión de RAM tras cargar el 1er experto, fallaba en el 2º -> caía
+    al camino bf16 de diffusers (que hace f.read() del archivo entero) y reventaba con
+    MemoryError. Leer el header evita eso por completo."""
     import glob
+    import json
+    import struct
+    if _fp8_dtype() is None:
+        return False
     shards = sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors")))
-    if not shards or _fp8_dtype() is None:
+    if not shards:
         return False
     try:
-        from safetensors import safe_open
-        with safe_open(shards[0], framework="pt") as f:
-            for k in f.keys():
-                if "F8_E4M3" in f.get_slice(k).get_dtype():
-                    return True
+        with open(shards[0], "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            header = json.loads(f.read(n))
+        return any(isinstance(v, dict) and v.get("dtype") == "F8_E4M3"
+                   for k, v in header.items() if k != "__metadata__")
     except Exception:
         return False
-    return False
 
 
 def _st_expected_size(path):
