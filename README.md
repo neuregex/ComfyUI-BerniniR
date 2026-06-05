@@ -36,14 +36,25 @@ pip install -r ComfyUI-BerniniR/requirements.txt
 
 ## Weights
 
-The **self-contained diffusers repo** ships the VAE + UMT5 + tokenizer + both transformers — nothing else to download:
+The **BerniniR · Load Model** node can fetch the weights for you — no manual download. It exposes:
+
+- **`source`** — which weights to use:
+  - **`neuregex/Bernini-R-fp8 (auto)`** *(default)* — [fp8 (e4m3) self-contained bundle](https://huggingface.co/neuregex/Bernini-R-fp8), **~40 GB**, runs the full pipeline in **24 GB**. The fp8 weights are bit-identical to the node's on-the-fly quantization.
+  - **`ByteDance/Bernini-R-Diffusers (full bf16)`** — original bf16 weights (~126 GB; A100-class, or use on-the-fly `fp8`).
+  - **`local`** — use the `model_dir` path directly.
+- **`auto_download`** *(default on)* — if the chosen repo's weights are missing, downloads them (with a free-space check, a `~40 GB first run` notice, and a progress bar). Turn it off to require a manual download.
+- **`download_dir`** *(default `models/bernini`)* — where HF repos are downloaded (relative to ComfyUI, or absolute).
+
+Manual download (optional), then set `source = local` and `model_dir` to the folder:
 
 ```bash
 pip install -U huggingface_hub
-hf download ByteDance/Bernini-R-Diffusers --local-dir Bernini-R-Diffusers
+hf download neuregex/Bernini-R-fp8 --local-dir models/bernini/Bernini-R-fp8      # fp8, ~40GB, 24GB-ready
+# or the full bf16:
+hf download ByteDance/Bernini-R-Diffusers --local-dir models/bernini/Bernini-R-Diffusers
 ```
 
-Point the nodes' `model_dir` field at that folder (an absolute path works too).
+Each repo is self-contained: VAE + UMT5 + tokenizer + scheduler + both transformers.
 
 ---
 
@@ -62,7 +73,7 @@ For editing/reference, add **BerniniR · Encode Source/Reference** (takes `sourc
 Example workflows (in **API format**, ready for `/prompt` or Modal) live in [`workflows/`](workflows/):
 `bernini_t2v`, `bernini_t2i`, `bernini_i2i`, `bernini_v2v`, `bernini_rv2v`, `bernini_r2v`.
 
-> The video workflows (`v2v`, `rv2v`) use `VHS_LoadVideo` from **ComfyUI-VideoHelperSuite** to load frames. Install it or swap in your preferred frame loader.
+> The video workflows (`v2v`, `rv2v`) load frames with the built-in **BerniniR · Load Video** node (webp/gif via PIL — no extra dependency; put the file in `ComfyUI/input`). For `mp4`/`avi`, use `VHS_LoadVideo` from **ComfyUI-VideoHelperSuite** and wire it into the same `source_video` input.
 
 ---
 
