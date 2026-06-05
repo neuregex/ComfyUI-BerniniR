@@ -119,8 +119,13 @@ class BerniniExpert(torch.nn.Module):
             self.t.scale_shift_table.data = self.t.scale_shift_table.data.to(device)
 
     def to_idle(self):
-        """Manda TODO el experto (residentes + swap + no-bloque) a CPU (inactivo)."""
-        self.t.to("cpu")
+        """Manda TODO el experto (residentes + swap + no-bloque) a CPU (inactivo). Si YA
+        está en CPU no hace nada: llamar .to('cpu') sobre los tensores fp8 de SOLO-LECTURA
+        (respaldados por mmap) dispara un 'access violation' -> torch recrea el Parameter
+        sobre memoria no-escribible. Solo movemos de verdad cuando viene de GPU (ahí
+        .to('cpu') crea copias escribibles nuevas, sin tocar el mmap original)."""
+        if self.device.type != "cpu":
+            self.t.to("cpu")
 
     @property
     def dtype(self):
