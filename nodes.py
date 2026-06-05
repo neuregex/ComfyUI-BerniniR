@@ -141,9 +141,16 @@ class BerniniRModelLoader:
             "fp8": ("BOOLEAN", {"default": True, "tooltip": "Cuantiza on-the-fly a fp8 si el repo es bf16 (el bundle fp8 ya viene cuantizado)."}),
             "offload_experts": ("BOOLEAN", {"default": True, "tooltip": "Mantén solo el experto activo en GPU (high/low se intercambian)."}),
         }, "optional": {
+            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Ruta local de los pesos (solo si source='local')."}),
+            # APPEND-ONLY: los widgets NUEVOS van SIEMPRE al final del bloque optional.
+            # ComfyUI mapea los `widgets_values` guardados a los slots por ORDEN; insertar
+            # un widget en medio desplaza los valores de los workflows ya guardados (p.ej.
+            # el model_dir de un .json viejo caería en este INT -> "invalid literal for
+            # int()"). Por eso blocks_to_swap va detrás de model_dir: los workflows 0.2.0
+            # (que terminaban en model_dir) siguen mapeando bien y blocks_to_swap cae a su
+            # default. NUNCA insertar widgets en medio de un bloque ya publicado.
             "blocks_to_swap": ("INT", {"default": 0, "min": 0, "max": 40,
                 "tooltip": "N de los 40 bloques del transformer viven en CPU y se streamean a GPU por bloque (baja VRAM, más lento). 0 = off. Sube hasta caber en 16/12GB."}),
-            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Ruta local de los pesos (solo si source='local')."}),
         }}
 
     # 2º output BR_PATH = ruta resuelta/descargada: VAE y TextEncode la reciben por
