@@ -105,22 +105,38 @@ def _download_with_progress(dst, total, do_download):
     stop = threading.Event()
 
     def _watch():
-        t0 = time.time()
+        # Solo imprime cuando hay PROGRESO real en disco (xet escribe a ráfagas: si
+        # imprimiéramos cada 2s veríamos 100 líneas con el mismo % y un MB/s "medio"
+        # que decae solo). MB/s = ritmo del último tramo (real, no decae); ETA = sobre
+        # el promedio global (estable). Latido cada ~20s si lleva rato plano (xet
+        # llenando su caché fuera de `dst`) para que se vea que sigue vivo.
+        t0 = t_prev = last_beat = time.time()
+        done_prev = 0
         while not stop.is_set():
+            stop.wait(2.0)
+            if not total:
+                continue
             done = _dir_size(dst)
-            if total and done > 0:
-                el = max(time.time() - t0, 1e-6)
-                spd = done / el / (1024 ** 2)                    # MB/s medios
-                eta = (total - done) / max(done / el, 1.0) / 60  # min restantes
+            now = time.time()
+            if done > done_prev:
+                inst = (done - done_prev) / max(now - t_prev, 1e-6) / (1024 ** 2)  # MB/s recientes
+                avg = done / max(now - t0, 1e-6)                                   # B/s medio
+                eta = (total - done) / max(avg, 1.0) / 60
                 print(f"[BerniniR]  {100 * min(done, total) / total:4.1f}%  "
-                      f"{done / g:5.2f}/{total / g:.2f}GB  {spd:5.1f}MB/s  "
+                      f"{done / g:5.2f}/{total / g:.2f}GB  {inst:5.1f}MB/s  "
                       f"ETA {max(eta, 0.0):4.1f}min", flush=True)
                 if pb:
                     try:
                         pb.update_absolute(min(done, total), total)
                     except Exception:
                         pass
-            stop.wait(2.0)
+                t_prev = last_beat = now
+                done_prev = done
+            elif now - last_beat >= 20:
+                print(f"[BerniniR]  {100 * min(done, total) / total:4.1f}%  "
+                      f"{done / g:.2f}/{total / g:.2f}GB  (sigue bajando; xet escribe a rafagas)",
+                      flush=True)
+                last_beat = now
 
     try:
         from huggingface_hub.utils import disable_progress_bars
