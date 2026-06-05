@@ -229,6 +229,18 @@ def upload_fp8(repo: str = "neuregex/Bernini-R-fp8", src: str = "Bernini-R-fp8")
         f.write(card)
     print(f"[*] create_repo {repo} (model)")
     create_repo(repo, repo_type="model", exist_ok=True, token=token)
+    # borra archivos obsoletos en HF (shards multi-pieza / *.index.json de subidas
+    # previas) — upload_large_folder NO elimina remotos ausentes en local.
+    from huggingface_hub import HfApi
+    api = HfApi()
+    try:
+        stale = [f for f in api.list_repo_files(repo, repo_type="model")
+                 if "-of-" in f or f.endswith(".index.json")]
+        for f in stale:
+            print(f"[*] borrando obsoleto en HF: {f}")
+            api.delete_file(path_in_repo=f, repo_id=repo, repo_type="model", token=token)
+    except Exception as e:
+        print("[!] limpieza HF (no fatal):", e)
     print(f"[*] upload_large_folder {folder} -> {repo}")
     upload_large_folder(repo_id=repo, folder_path=folder, repo_type="model")
     print(f"[ok] subido: https://huggingface.co/{repo}")

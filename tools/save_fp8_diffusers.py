@@ -79,6 +79,8 @@ def main():
         m = WanTransformer3DModel.from_pretrained(args.src, subfolder=sub, torch_dtype=torch.bfloat16)
         cast_fp8_(m, skip=FP8_SKIP)
         out_sub = os.path.join(args.dst, sub)
+        if os.path.isdir(out_sub):
+            shutil.rmtree(out_sub)        # evita dejar shards/index viejos al re-shardear
         print(f"[*] save_pretrained {sub} (fp8) -> {out_sub}")
         # max_shard_size grande -> 1 solo .safetensors por experto (sin 00001-of-000NN
         # ni index.json); cada experto fp8 pesa ~14GB < 30GB.
