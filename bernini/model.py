@@ -75,7 +75,7 @@ class Stream:
 class BerniniExpert(torch.nn.Module):
     """Envoltorio de UN experto (high- o low-noise) = WanTransformer3DModel."""
 
-    def __init__(self, transformer, use_src_id_rotary_emb: bool = True):
+    def __init__(self, transformer, use_src_id_rotary_emb: bool = True, block_swap: int = 0):
         super().__init__()
         self.t = transformer                     # diffusers WanTransformer3DModel
         cfg = transformer.config
@@ -93,6 +93,34 @@ class BerniniExpert(torch.nn.Module):
         proc = _BerniniSelfAttnProcessor()
         for blk in self.t.blocks:
             blk.attn1.set_processor(proc)
+        # block-swap: los ÚLTIMOS `block_swap` de los N bloques viven en CPU y se
+        # streamean a GPU durante su propio forward (el resto quedan residentes en
+        # GPU). 0 = sin swap (comportamiento actual). Baja el pico de VRAM a costa
+        # de transferencias por bloque (más lento). NO cambia la matemática.
+        n = len(self.t.blocks)
+        self.block_swap = max(0, min(int(block_swap), n))
+        self._swap_idx = frozenset(range(n - self.block_swap, n))
+
+    # -- colocación con block-swap / offload -----------------------------------
+    def to_active(self, device):
+        """Deja el experto listo para inferir en `device`. Con block_swap>0 SOLO los
+        bloques residentes + las partes no-bloque (patch_embedding, condition_embedder,
+        norm_out, proj_out, scale_shift_table, rope) van a `device`; los bloques swap
+        quedan en CPU (se streamean en el forward) — sin pico de experto-completo."""
+        if not self.block_swap:
+            self.t.to(device)
+            return
+        for i, blk in enumerate(self.t.blocks):
+            blk.to("cpu" if i in self._swap_idx else device)
+        for name, mod in self.t.named_children():
+            if name != "blocks":
+                mod.to(device)
+        if hasattr(self.t, "scale_shift_table"):
+            self.t.scale_shift_table.data = self.t.scale_shift_table.data.to(device)
+
+    def to_idle(self):
+        """Manda TODO el experto (residentes + swap + no-bloque) a CPU (inactivo)."""
+        self.t.to("cpu")
 
     @property
     def dtype(self):
@@ -142,14 +170,24 @@ class BerniniExpert(torch.nn.Module):
     # -- réplica del cuerpo de WanTransformer3DModel.forward (post patch-embed) -
     def _run_blocks(self, hidden, rotary, text_emb, timestep):
         t = self.t
+        dev = self.device                                   # device residente (patch_embedding)
         # condition_embedder: (temb, timestep_proj, enc_text, enc_img)
-        ce = t.condition_embedder(timestep.to(self.device), text_emb.to(self.dtype), None)
+        ce = t.condition_embedder(timestep.to(dev), text_emb.to(self.dtype), None)
         temb, timestep_proj = ce[0], ce[1]
         enc_text = ce[2] if len(ce) > 2 else text_emb
         timestep_proj = timestep_proj.unflatten(1, (6, -1))
 
-        for block in t.blocks:
-            hidden = block(hidden, enc_text, timestep_proj, rotary)
+        # block-swap: el bloque DEBE estar en `dev` antes de su forward (el parche fp8
+        # hace weight.to(x.dtype) sobre el peso del bloque, así que device debe coincidir).
+        # Activaciones (hidden/rotary/enc_text/timestep_proj) viven en `dev`.
+        swap = self._swap_idx if self.block_swap else frozenset()
+        for i, block in enumerate(t.blocks):
+            if i in swap:
+                block.to(dev, non_blocking=True)
+                hidden = block(hidden, enc_text, timestep_proj, rotary)
+                block.to("cpu", non_blocking=True)
+            else:
+                hidden = block(hidden, enc_text, timestep_proj, rotary)
 
         shift, scale = (t.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
         hidden = (t.norm_out(hidden.float()) * (1 + scale) + shift).type_as(hidden)
