@@ -42,8 +42,10 @@ The **BerniniR · Load Model** node can fetch the weights for you — no manual 
   - **`neuregex/Bernini-R-fp8 (auto)`** *(default)* — [fp8 (e4m3) self-contained bundle](https://huggingface.co/neuregex/Bernini-R-fp8), **~40 GB**, runs the full pipeline in **24 GB**. The fp8 weights are bit-identical to the node's on-the-fly quantization.
   - **`ByteDance/Bernini-R-Diffusers (full bf16)`** — original bf16 weights (~126 GB; A100-class, or use on-the-fly `fp8`).
   - **`local`** — use the `model_dir` path directly.
-- **`auto_download`** *(default on)* — if the chosen repo's weights are missing, downloads them (with a free-space check, a `~40 GB first run` notice, and a progress bar). Turn it off to require a manual download.
+- **`auto_download`** *(default on)* — if the chosen repo's weights are missing, downloads them. The first run pulls **~40 GB** (fp8 bundle), so it takes a while; the console shows **real byte progress** (`12.3%  4.95/40.30GB  47.2MB/s  ETA 12.6min`), not just a file count. The download is **resumable** — if you cancel (Ctrl-C / Cancel), the next Run picks up where it left off. A free-space check runs first. Turn it off to require a manual download.
 - **`download_dir`** *(default `models/bernini`)* — where HF repos are downloaded (relative to ComfyUI, or absolute).
+
+> **The download stalled at "Fetching N files: 5%"?** That old file-count bar (≤0.3.3) looked frozen while a 14 GB shard streamed. 0.3.4+ shows true byte progress instead. The node also disables HF's **xet** transport by default (`HF_HUB_DISABLE_XET=1`), which can hang on Windows portable; it uses plain HTTPS (LFS), which is slower but rock-solid. To re-enable xet, set `HF_HUB_DISABLE_XET=0` before launching ComfyUI.
 
 Manual download (optional), then set `source = local` and `model_dir` to the folder:
 

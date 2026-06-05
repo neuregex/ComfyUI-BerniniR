@@ -72,59 +72,113 @@ def _resolve_dir(p):
         return os.path.abspath(p)
 
 
-def _comfy_tqdm():
-    """tqdm que además refleja el progreso en la barra de ComfyUI (best-effort)."""
+def _byte_progress(total_bytes):
+    """Factory de tqdm que AGREGA todas las barras de bytes de la descarga en UNA
+    barra global -> progreso REAL (%, GB, MB/s, ETA) en consola + barra de ComfyUI.
+
+    IGNORA la barra 'Fetching N files' (cuenta ARCHIVOS, no bytes): esa es la que
+    daba falsa sensación de cuelgue -> se queda en 5% (=1/19 archivos) durante los
+    minutos que tarda un shard de 14GB, sin mostrar bytes. Aquí, mientras baja ese
+    shard, el usuario ve el % real subir y los MB/s."""
     try:
-        from comfy.utils import ProgressBar
         from tqdm import tqdm as _tqdm
     except Exception:
         return None
+    try:
+        from comfy.utils import ProgressBar
+        pb = ProgressBar(total_bytes) if total_bytes else None
+    except Exception:
+        pb = None
+    import threading
+    import time
+    st = {"done": 0, "t0": time.time(), "last": 0.0, "lock": threading.Lock()}
 
-    class _PBTqdm(_tqdm):
+    class _AggTqdm(_tqdm):
         def __init__(self, *a, **k):
             super().__init__(*a, **k)
-            self._pb = ProgressBar(self.total) if getattr(self, "total", None) else None
+            # snapshot_download usa unit="B" en las barras de bytes; la de archivos no.
+            self._bytes = (getattr(self, "unit", "") or "").upper().startswith("B")
+            self._prev = 0
 
         def update(self, n=1):
             super().update(n)
-            try:
-                if self._pb and self.total:
-                    self._pb.update_absolute(self.n, self.total)
-            except Exception:
-                pass
-    return _PBTqdm
+            if not self._bytes:
+                return
+            with st["lock"]:
+                st["done"] += self.n - self._prev
+                self._prev = self.n
+                done = st["done"]
+                now = time.time()
+                emit = now - st["last"] >= 1.0
+                if emit:
+                    st["last"] = now
+            if pb and total_bytes:
+                try:
+                    pb.update_absolute(min(done, total_bytes), total_bytes)
+                except Exception:
+                    pass
+            if emit and total_bytes:
+                g = 1024 ** 3
+                el = max(now - st["t0"], 1e-6)
+                spd = done / el / (1024 ** 2)                          # MB/s medios
+                eta = (total_bytes - done) / max(done / el, 1.0) / 60  # min restantes
+                print(f"[BerniniR]  {100 * done / total_bytes:4.1f}%  "
+                      f"{done / g:5.2f}/{total_bytes / g:.2f}GB  {spd:5.1f}MB/s  "
+                      f"ETA {eta:4.1f}min", flush=True)
+    return _AggTqdm
 
 
 def _ensure_weights(repo_id, dst, auto_download):
     """Garantiza pesos en `dst`; si faltan y auto_download, los baja de HF con
-    check de espacio + aviso + progreso (tqdm/ProgressBar). Si no, raise claro."""
+    progreso REAL por bytes (%, MB/s, ETA) + check de espacio exacto. El transporte
+    xet va DESACTIVADO por defecto: en Windows/portable puede colgarse; HTTPS clásico
+    (LFS) es estable y resumible. Si faltan y no hay auto_download, raise con la orden
+    manual. Es resumible: un Ctrl-C deja los .safetensors a medias y el re-run retoma."""
     if _has_weights(dst):
         return dst
     if not auto_download:
         raise FileNotFoundError(
             f"[BerniniR] Faltan pesos de '{repo_id}' en {dst}. Activa auto_download, o "
             f"descárgalos a mano:\n  huggingface-cli download {repo_id} --local-dir \"{dst}\"")
+
+    # xet OFF por defecto (evita el cuelgue del transporte xet en Windows/portable).
+    # Para forzar xet: exporta HF_HUB_DISABLE_XET=0 antes de lanzar ComfyUI.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     import shutil as _sh
     from huggingface_hub import snapshot_download
     parent = os.path.dirname(dst) or "."
-    os.makedirs(parent, exist_ok=True)
-    free_gb = _sh.disk_usage(parent).free / (1024 ** 3)
-    need_gb = 40 if "fp8" in repo_id.lower() else 130
-    print(f"[BerniniR] descargando '{repo_id}' -> {dst}  (~{need_gb}GB el PRIMER run; "
-          f"{free_gb:.0f}GB libres en {parent})")
-    if free_gb < need_gb * 1.1:
-        raise RuntimeError(
-            f"[BerniniR] espacio insuficiente para '{repo_id}': ~{int(need_gb * 1.1)}GB "
-            f"necesarios, solo {free_gb:.0f}GB libres en {parent}.")
     os.makedirs(dst, exist_ok=True)
+    g = 1024 ** 3
+
+    # Total REAL en bytes desde la metadata del repo -> % fiable + check exacto.
+    total = 0
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().model_info(repo_id, files_metadata=True)
+        total = sum((s.size or 0) for s in info.siblings if not s.rfilename.endswith("/"))
+    except Exception as e:
+        print(f"[BerniniR] aviso: no pude leer tamaños del repo ({e}); sigo sin % global.")
+
+    need = total if total else (40 * g if "fp8" in repo_id.lower() else 130 * g)
+    free = _sh.disk_usage(parent).free
+    xet_off = os.environ.get("HF_HUB_DISABLE_XET", "0") not in ("0", "false", "False")
+    print(f"[BerniniR] descargando '{repo_id}' -> {dst}", flush=True)
+    print(f"[BerniniR] total ~{need / g:.1f}GB | libres {free / g:.0f}GB en {parent} | "
+          f"xet={'off' if xet_off else 'on'} | resumible (Ctrl-C y re-run retoma)", flush=True)
+    if free < need * 1.05:
+        raise RuntimeError(
+            f"[BerniniR] espacio insuficiente para '{repo_id}': ~{need * 1.05 / g:.0f}GB "
+            f"necesarios, solo {free / g:.0f}GB libres en {parent}.")
+
     kw = {}
-    tq = _comfy_tqdm()
+    tq = _byte_progress(total)
     if tq is not None:
         kw["tqdm_class"] = tq
     snapshot_download(repo_id=repo_id, local_dir=dst, **kw)
     if not _has_weights(dst):
         raise RuntimeError(f"[BerniniR] descarga incompleta: sin transformer/*.safetensors en {dst}")
-    print(f"[BerniniR] descarga completa: {dst}")
+    print(f"[BerniniR] descarga completa: {dst}", flush=True)
     return dst
 
 
