@@ -144,11 +144,11 @@ def _download_with_progress(dst, total, do_download):
 
 
 def _ensure_weights(repo_id, dst, auto_download):
-    """Garantiza pesos en `dst`; si faltan y auto_download, los baja de HF con
-    progreso REAL por bytes (%, MB/s, ETA) + check de espacio exacto. El transporte
-    xet va DESACTIVADO por defecto: en Windows/portable puede colgarse; HTTPS clásico
-    (LFS) es estable y resumible. Si faltan y no hay auto_download, raise con la orden
-    manual. Es resumible: un Ctrl-C deja los .safetensors a medias y el re-run retoma."""
+    """Garantiza pesos en `dst`; si faltan y auto_download, los baja de HF con progreso
+    REAL por bytes (%, MB/s, ETA) + check de espacio exacto. Usa el motor de HF: xet
+    (Rust, multi-conexión, rápido) si 'hf_xet' está instalado, si no HTTPS clásico.
+    Resumible: un Ctrl-C deja los .safetensors a medias y el re-run retoma. Si faltan y
+    no hay auto_download, raise con la orden manual."""
     if _has_weights(dst):
         return dst
     if not auto_download:
@@ -156,19 +156,18 @@ def _ensure_weights(repo_id, dst, auto_download):
             f"[BerniniR] Faltan pesos de '{repo_id}' en {dst}. Activa auto_download, o "
             f"descárgalos a mano:\n  huggingface-cli download {repo_id} --local-dir \"{dst}\"")
 
-    # xet OFF de forma fiable y SILENCIOSA (el usuario no toca NADA). El transporte
-    # xet de HF puede colgarse en Windows/portable; HTTPS clásico es estable. No basta
-    # os.environ: huggingface_hub congela constants.HF_HUB_DISABLE_XET al importar, pero
-    # is_xet_available() la lee EN VIVO -> la fijamos directamente. Respeta override del
-    # usuario (HF_HUB_DISABLE_XET=0 deja xet activo para quien lo quiera).
-    if os.environ.get("HF_HUB_DISABLE_XET") is None:
-        os.environ["HF_HUB_DISABLE_XET"] = "1"
-    if os.environ.get("HF_HUB_DISABLE_XET", "1") not in ("0", "false", "False"):
-        try:
-            import huggingface_hub.constants as _hc
-            _hc.HF_HUB_DISABLE_XET = True
-        except Exception:
-            pass
+    # Motor: huggingface_hub usa xet (Rust, multi-conexión, RÁPIDO) si 'hf_xet' está
+    # instalado; si no, HTTPS clásico (1 stream/archivo). NO forzamos nada -> dejamos el
+    # acelerador nativo activo (antes lo desactivábamos por una hipótesis de cuelgue que
+    # no se sostuvo). Un HF_HUB_DISABLE_XET=1 en el entorno lo apaga, por si hiciera falta.
+    try:
+        import hf_xet  # noqa: F401
+        _xet_on = os.environ.get("HF_HUB_DISABLE_XET") not in ("1", "true", "True")
+    except Exception:
+        _xet_on = False
+    if not _xet_on:
+        print("[BerniniR] tip: 'pip install hf_xet' habilita descargas xet "
+              "(multi-conexión; suele ir más rápido si tu conexión da para más).", flush=True)
 
     import shutil as _sh
     from huggingface_hub import snapshot_download
@@ -187,10 +186,10 @@ def _ensure_weights(repo_id, dst, auto_download):
 
     need = total if total else (40 * g if "fp8" in repo_id.lower() else 130 * g)
     free = _sh.disk_usage(parent).free
-    xet_off = os.environ.get("HF_HUB_DISABLE_XET", "0") not in ("0", "false", "False")
     print(f"[BerniniR] descargando '{repo_id}' -> {dst}", flush=True)
     print(f"[BerniniR] total ~{need / g:.1f}GB | libres {free / g:.0f}GB en {parent} | "
-          f"xet={'off' if xet_off else 'on'} | resumible (Ctrl-C y re-run retoma)", flush=True)
+          f"motor={'xet (rapido)' if _xet_on else 'https'} | resumible (Ctrl-C y re-run retoma)",
+          flush=True)
     if free < need * 1.05:
         raise RuntimeError(
             f"[BerniniR] espacio insuficiente para '{repo_id}': ~{need * 1.05 / g:.0f}GB "
