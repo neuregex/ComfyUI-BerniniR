@@ -183,9 +183,13 @@ class BerniniExpert(torch.nn.Module):
         swap = self._swap_idx if self.block_swap else frozenset()
         for i, block in enumerate(t.blocks):
             if i in swap:
-                block.to(dev, non_blocking=True)
+                # SÍNCRONO a propósito: con non_blocking, el caching allocator puede
+                # reutilizar la memoria GPU del bloque antes de que termine la copia
+                # D2H -> corrompe la copia CPU y diverge (la lógica es correcta, era
+                # esto). El streaming ya es el cuello de botella, así que el coste es bajo.
+                block.to(dev)
                 hidden = block(hidden, enc_text, timestep_proj, rotary)
-                block.to("cpu", non_blocking=True)
+                block.to("cpu")
             else:
                 hidden = block(hidden, enc_text, timestep_proj, rotary)
 
