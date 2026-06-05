@@ -81,6 +81,21 @@ def download_weights(repo: str = "ByteDance/Bernini-R-Diffusers"):
     print("[ok] pesos en el Volume")
 
 
+@app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60,
+              container_idle_timeout=60, memory=CPU_MEM)
+def build_fp8(src: str = "Bernini-R-Diffusers", dst: str = "Bernini-R-fp8"):
+    """Construye el bundle fp8 self-contained en el Volume (sin GPU): corre
+    tools/save_fp8_diffusers.py sobre /models/<src> -> /models/<dst>."""
+    import subprocess
+    import sys
+    script = "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR/tools/save_fp8_diffusers.py"
+    cmd = [sys.executable, script, "--in", f"{MODELS_DIR}/{src}", "--out", f"{MODELS_DIR}/{dst}"]
+    print("[*] build fp8:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+    MODELS.commit()
+    print(f"[ok] bundle fp8 en el Volume: {MODELS_DIR}/{dst}")
+
+
 @app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 30,
               container_idle_timeout=60, memory=CPU_MEM)
 def smoke(fp8: bool = False):
