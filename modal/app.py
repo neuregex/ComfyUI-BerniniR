@@ -234,13 +234,20 @@ def upload_fp8(repo: str = "neuregex/Bernini-R-fp8", src: str = "Bernini-R-fp8")
     from huggingface_hub import HfApi
     api = HfApi()
     try:
+        # SOLO los expertos pasan de multi-shard a 1 archivo; el text_encoder (UMT5)
+        # es legítimamente multi-shard -> NO tocarlo.
         stale = [f for f in api.list_repo_files(repo, repo_type="model")
-                 if "-of-" in f or f.endswith(".index.json")]
+                 if (f.startswith("transformer/") or f.startswith("transformer_2/"))
+                 and ("-of-" in f or f.endswith(".index.json"))]
         for f in stale:
             print(f"[*] borrando obsoleto en HF: {f}")
             api.delete_file(path_in_repo=f, repo_id=repo, repo_type="model", token=token)
     except Exception as e:
         print("[!] limpieza HF (no fatal):", e)
+    # limpia el cache de reanudación de upload_large_folder (si no, salta archivos
+    # que él cree subidos pero que se borraron en HF -> re-verifica contra el remoto).
+    import shutil as _sh
+    _sh.rmtree(os.path.join(folder, ".cache"), ignore_errors=True)
     print(f"[*] upload_large_folder {folder} -> {repo}")
     upload_large_folder(repo_id=repo, folder_path=folder, repo_type="model")
     print(f"[ok] subido: https://huggingface.co/{repo}")
