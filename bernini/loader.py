@@ -12,26 +12,64 @@ _DT = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 
 # --------------------------------------------------------------------------
 # fp8 ligero: pesos en float8_e4m3fn (almacenamiento), upcast en cada forward.
-# Halva la VRAM de cada experto (~28GB bf16 -> ~14GB). Experimental.
+# Halva la VRAM de cada experto (~28GB bf16 -> ~14GB).
+#
+# Separado en dos pasos para soportar pesos PRE-cuantizados en disco:
+#   cast_fp8_(m)          -> castea los Linear (salvo skip) a e4m3. Solo pesos.
+#   apply_fp8_forward_(m) -> parchea el forward de los Linear que YA están en fp8
+#                            (upcast a x.dtype en cada forward). NO re-castea.
+# quantize_fp8_ = cast + apply (cuantización on-the-fly del bf16).
+# Skip-list: norm/embed/head/modulation/time_/text_emb (y patch_embedding NO está
+# en la lista pero su nombre tampoco matchea, así que queda en bf16 por defecto...
+# OJO: patch_embedding es Conv3d, no Linear, así que nunca se castea aquí).
 # --------------------------------------------------------------------------
-def quantize_fp8_(module, skip=("norm", "embed", "head", "modulation", "time_", "text_emb")):
-    fp8 = getattr(torch, "float8_e4m3fn", None)
+FP8_SKIP = ("norm", "embed", "head", "modulation", "time_", "text_emb")
+
+
+def _fp8_dtype():
+    return getattr(torch, "float8_e4m3fn", None)
+
+
+def cast_fp8_(module, skip=FP8_SKIP):
+    """Castea a float8_e4m3fn los pesos de los `nn.Linear` cuyo nombre NO matchea
+    `skip`. NO toca el forward ni los bias. Devuelve el módulo (in-place)."""
+    fp8 = _fp8_dtype()
     if fp8 is None:
-        print("[BerniniR] aviso: torch sin float8_e4m3fn; se omite fp8")
+        print("[BerniniR] aviso: torch sin float8_e4m3fn; se omite cast fp8")
         return module
     n = 0
     for name, lin in module.named_modules():
         if isinstance(lin, torch.nn.Linear) and not any(s in name for s in skip):
             lin.weight.data = lin.weight.data.to(fp8)
+            n += 1
+    print(f"[BerniniR] fp8 cast: {n} Linear -> e4m3 en {module.__class__.__name__}")
+    return module
 
+
+def apply_fp8_forward_(module):
+    """Parchea el forward de los `nn.Linear` que YA están en fp8 (upcast del peso a
+    x.dtype en cada forward). Sirve tras `cast_fp8_` o tras cargar un checkpoint
+    pre-fp8; NO re-castea (preserva el fp8 del disco)."""
+    fp8 = _fp8_dtype()
+    if fp8 is None:
+        return module
+    n = 0
+    for lin in module.modules():
+        if isinstance(lin, torch.nn.Linear) and lin.weight.dtype == fp8:
             def make_fwd(l):
                 def fwd(x):
                     return Fnn.linear(x, l.weight.to(x.dtype), l.bias)
                 return fwd
             lin.forward = make_fwd(lin)
             n += 1
-    print(f"[BerniniR] fp8: {n} capas lineales cuantizadas en {module.__class__.__name__}")
+    print(f"[BerniniR] fp8 forward patch: {n} Linear")
     return module
+
+
+def quantize_fp8_(module, skip=FP8_SKIP):
+    """On-the-fly: castea a fp8 y parchea el forward (cast_fp8_ + apply_fp8_forward_)."""
+    cast_fp8_(module, skip=skip)
+    return apply_fp8_forward_(module)
 
 
 # --------------------------------------------------------------------------
