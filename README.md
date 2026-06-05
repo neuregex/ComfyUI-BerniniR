@@ -70,8 +70,10 @@ BerniniR · Text Encode ┴─► BerniniR · Sampler ─► BerniniR · VAE Dec
 
 For editing/reference, add **BerniniR · Encode Source/Reference** (takes `source_video` and/or `reference_images`) and wire it into the sampler's `src` input. The Text Encode `task_type` auto-selects the `guidance_mode` (you can override it).
 
-Example workflows (in **API format**, ready for `/prompt` or Modal) live in [`workflows/`](workflows/):
-`bernini_t2v`, `bernini_t2i`, `bernini_i2i`, `bernini_v2v`, `bernini_rv2v`, `bernini_r2v`.
+Example workflows come in two formats:
+
+- **UI format** (drag-and-drop onto the ComfyUI canvas) — [`workflows/ui/`](workflows/ui/): `bernini_t2v.json`, `bernini_i2i.json`. Use these in the app: just drop the file on the canvas (or *Workflow → Open*). Validated to load and run in a real ComfyUI (the `BR_PATH` Load Model → VAE/Text Encode wiring is drawn for you).
+- **API format** (for the `/prompt` endpoint, Modal, or *Workflow → Open (API)*) — [`workflows/`](workflows/): `bernini_t2v`, `bernini_t2i`, `bernini_i2i`, `bernini_v2v`, `bernini_rv2v`, `bernini_r2v`.
 
 > The video workflows (`v2v`, `rv2v`) load frames with the built-in **BerniniR · Load Video** node (webp/gif via PIL — no extra dependency; put the file in `ComfyUI/input`). For `mp4`/`avi`, use `VHS_LoadVideo` from **ComfyUI-VideoHelperSuite** and wire it into the same `source_video` input.
 
