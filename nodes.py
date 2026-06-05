@@ -144,8 +144,10 @@ class BerniniRModelLoader:
             "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Ruta local de los pesos (solo si source='local')."}),
         }}
 
-    RETURN_TYPES = ("BR_MODEL",)
-    RETURN_NAMES = ("model",)
+    # 2º output BR_PATH = ruta resuelta/descargada: VAE y TextEncode la reciben por
+    # conexión, así TODO el grafo usa UNA sola fuente de pesos (incl. auto-download).
+    RETURN_TYPES = ("BR_MODEL", "BR_PATH")
+    RETURN_NAMES = ("model", "model_path")
     FUNCTION = "load"
     CATEGORY = "BerniniR"
 
@@ -170,14 +172,14 @@ class BerniniRModelLoader:
                 renderer.low.t.to(_device())
         renderer._offload = offload_experts
         renderer._model_dir = resolved
-        return ({"renderer": renderer, "offload": offload_experts, "model_dir": resolved},)
+        return ({"renderer": renderer, "offload": offload_experts, "model_dir": resolved}, resolved)
 
 
 class BerniniRVAELoader:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers"}),
+            "model_path": ("BR_PATH", {"tooltip": "Conecta el output 'model_path' del Load Model."}),
             "dtype": (["fp16", "bf16", "fp32"], {"default": "fp16"}),
         }}
 
@@ -186,8 +188,8 @@ class BerniniRVAELoader:
     FUNCTION = "load"
     CATEGORY = "BerniniR"
 
-    def load(self, model_dir, dtype):
-        vae = load_vae(os.path.expanduser(model_dir), dtype=dtype, device=_offload_device())
+    def load(self, model_path, dtype):
+        vae = load_vae(os.path.expanduser(model_path), dtype=dtype, device=_offload_device())
         return (vae,)
 
 
@@ -195,7 +197,7 @@ class BerniniRTextEncode:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "model_dir": ("STRING", {"default": "Bernini-R-Diffusers"}),
+            "model_path": ("BR_PATH", {"tooltip": "Conecta el output 'model_path' del Load Model."}),
             "prompt": ("STRING", {"multiline": True, "default": ""}),
             "task_type": (C.TASK_TYPES, {"default": "t2v"}),
             "add_system_prefix": ("BOOLEAN", {"default": True, "tooltip": "Antepone el system prompt de la tarea (como Bernini)."}),
@@ -207,8 +209,8 @@ class BerniniRTextEncode:
     FUNCTION = "encode"
     CATEGORY = "BerniniR"
 
-    def encode(self, model_dir, prompt, task_type, add_system_prefix, negative_prompt):
-        te = TextEncoder(os.path.expanduser(model_dir), dtype="bf16", device=_device())
+    def encode(self, model_path, prompt, task_type, add_system_prefix, negative_prompt):
+        te = TextEncoder(os.path.expanduser(model_path), dtype="bf16", device=_device())
         prefix = C.get_system_prompt_for_task(task_type) if add_system_prefix else ""
         pos = te.encode(prompt, system_prefix=prefix)
         neg = te.encode(negative_prompt, system_prefix="")   # el negativo NO lleva prefijo

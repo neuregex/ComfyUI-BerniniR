@@ -13,14 +13,20 @@
   "2": {
     "class_type": "BerniniRVAELoader",
     "inputs": {
-      "model_dir": "Bernini-R-Diffusers",
+      "model_path": [
+        "1",
+        1
+      ],
       "dtype": "fp16"
     }
   },
   "3": {
     "class_type": "BerniniRTextEncode",
     "inputs": {
-      "model_dir": "Bernini-R-Diffusers",
+      "model_path": [
+        "1",
+        1
+      ],
       "prompt": "A studio portrait of a calico cat wearing tiny glasses",
       "task_type": "t2i",
       "add_system_prefix": true,

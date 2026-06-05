@@ -232,7 +232,8 @@ class _Comfy:
 def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0,
         gen_input: str = "", src_video: str = "", prompt: str = "",
-        model_subdir: str = "Bernini-R-Diffusers"):
+        model_subdir: str = "Bernini-R-Diffusers",
+        hf_source: str = "", download_dir: str = ""):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
@@ -262,13 +263,19 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
     for node in graph.values():
         ins = node.get("inputs", {})
         ct = node.get("class_type", "")
-        if "model_dir" in ins:
-            ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
         if ct == "BerniniRModelLoader":
-            # en Modal usamos los pesos del Volume, no descargamos de HF
-            ins["source"] = "local"
-            ins["auto_download"] = False
-            ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
+            if hf_source:
+                # primer-run GENUINO: el loader auto-descarga de HF a download_dir
+                # (VAE/TextEncode heredan esa ruta vía el output model_path, sin override).
+                ins["source"] = hf_source
+                ins["auto_download"] = True
+                ins["download_dir"] = download_dir or "/tmp/bernini_dl"
+                ins.pop("model_dir", None)
+            else:
+                # camino harness: pesos del Volume, sin descargar
+                ins["source"] = "local"
+                ins["auto_download"] = False
+                ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
             ins["fp8"] = bool(fp8)
         if ct == "BerniniRSampler":
             if num_frames:
