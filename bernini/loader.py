@@ -137,14 +137,16 @@ def _manual_load(path, keep):
     import mmap as _mmap
     import struct
     import warnings
+    import numpy as np
     f = open(path, "rb")
     n = struct.unpack("<Q", f.read(8))[0]
     header = json.loads(f.read(n))
     base = 8 + n
-    try:
-        mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_COPY)   # COW: perezoso + escribible
-    except (OSError, ValueError):
-        mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_READ)   # fallback solo-lectura
+    # SOLO-LECTURA a propósito: NO reserva 'commit charge'. ACCESS_COPY (copy-on-write)
+    # en Windows reserva commit por TODO el tamaño del mapeo -> con 2 expertos de 14.6GB
+    # agotaba el pagefile ('archivo de paginación demasiado pequeño', os error 1455) al
+    # cargar UMT5 después. ACCESS_READ es file-backed: las páginas son caché reclamable.
+    mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_READ)
     keep.append(f)
     keep.append(mm)
     out = {}
@@ -160,7 +162,11 @@ def _manual_load(path, keep):
             s, e = meta["data_offsets"]
             shape = meta["shape"]
             if e > s:
-                t = torch.frombuffer(mm, dtype=torch.uint8, count=e - s, offset=base + s).view(dt)
+                # np.frombuffer acepta el buffer de solo-lectura sin quejas; from_numpy
+                # comparte su memoria (perezoso). El tensor queda de solo-lectura: no
+                # escribimos los pesos (el forward hace weight.to(dtype), que copia).
+                arr = np.frombuffer(mm, dtype=np.uint8, count=e - s, offset=base + s)
+                t = torch.from_numpy(arr).view(dt)
                 out[name] = t.reshape(shape) if shape else t.reshape(())
             else:
                 out[name] = torch.empty(shape, dtype=dt)          # tensor vacío
