@@ -80,7 +80,9 @@ def main():
         cast_fp8_(m, skip=FP8_SKIP)
         out_sub = os.path.join(args.dst, sub)
         print(f"[*] save_pretrained {sub} (fp8) -> {out_sub}")
-        m.save_pretrained(out_sub)
+        # max_shard_size grande -> 1 solo .safetensors por experto (sin 00001-of-000NN
+        # ni index.json); cada experto fp8 pesa ~14GB < 30GB.
+        m.save_pretrained(out_sub, max_shard_size="30GB")
         del m
 
     # resto self-contained (sin tocar)

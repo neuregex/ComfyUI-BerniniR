@@ -341,7 +341,8 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         num_frames: int = 0, width: int = 0, height: int = 0, steps: int = 0,
         gen_input: str = "", src_video: str = "", prompt: str = "",
         model_subdir: str = "Bernini-R-Diffusers",
-        hf_source: str = "", download_dir: str = ""):
+        hf_source: str = "", download_dir: str = "",
+        input_image: str = "", omega_i: float = 0.0, omega_v: float = 0.0, omega_ti: float = 0.0):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
@@ -394,8 +395,16 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
                 ins["height"] = int(height)
             if steps:
                 ins["steps"] = int(steps)
+            if omega_i:
+                ins["omega_I"] = float(omega_i)
+            if omega_v:
+                ins["omega_V"] = float(omega_v)
+            if omega_ti:
+                ins["omega_TI"] = float(omega_ti)
         if ct == "BerniniRLoadVideo" and src_video:
             ins["video"] = pathlib.Path(src_video).name
+        if ct == "LoadImage" and input_image:
+            ins["image"] = pathlib.Path(input_image).name
         if ct == "BerniniRTextEncode" and prompt:
             ins["prompt"] = prompt
 
@@ -421,6 +430,15 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         dst_v = inp_dir / pathlib.Path(src_video).name
         shutil.copy(f"{OUT_DIR}/{src_video}", str(dst_v))
         print(f"[*] source video {src_video} -> {dst_v}")
+
+    # imagen de entrada REAL (foto) para i2i: copia del Volume out -> ComfyUI/input
+    # (el LoadImage la lee por nombre, ya parcheado arriba).
+    if input_image:
+        inp_dir = pathlib.Path("/root/ComfyUI/input")
+        inp_dir.mkdir(parents=True, exist_ok=True)
+        dst_i = inp_dir / pathlib.Path(input_image).name
+        shutil.copy(f"{OUT_DIR}/{input_image}", str(dst_i))
+        print(f"[*] input image {input_image} -> {dst_i}")
 
     # activa el reporte de pico de VRAM en los nodos (el subproceso de ComfyUI
     # hereda este env); nodes.py imprime torch.cuda.max_memory_allocated().
