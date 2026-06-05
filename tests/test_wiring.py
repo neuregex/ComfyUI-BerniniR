@@ -1,8 +1,8 @@
 # Copyright (c) 2026 — ComfyUI-BerniniR. Apache-2.0.
 """Test de *wiring* end-to-end en CPU con pesos aleatorios.
 
-NO valida calidad ni fidelidad numérica contra Bernini-R (eso es el harness de
-Modal con los pesos reales). Aquí solo comprobamos que el ENSAMBLADO está bien
+NO valida calidad ni fidelidad numérica contra Bernini-R (eso requiere los pesos
+reales en GPU). Aquí solo comprobamos que el ENSAMBLADO está bien
 conectado: dos `WanTransformer3DModel` diminutos -> `BerniniExpert` ->
 `BerniniRenderer` -> `BerniniSampler` corren los modos de guía sin excepción,
 emiten un latente espacial `[1, 16, T, H, W]` y no producen NaN.

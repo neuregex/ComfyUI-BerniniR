@@ -12,7 +12,7 @@ Al final VERIFICA que en disco los pesos quedaron en float8_e4m3fn.
 Uso:
     python tools/save_fp8_diffusers.py --in Bernini-R-Diffusers --out Bernini-R-fp8
 
-(Pensado para correr donde están los pesos — p.ej. el Volume de Modal, ~126GB.)
+(Pensado para correr donde están los pesos, ~126GB.)
 """
 import argparse
 import glob

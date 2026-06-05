@@ -73,7 +73,7 @@ For editing/reference, add **BerniniR · Encode Source/Reference** (takes `sourc
 Example workflows come in two formats:
 
 - **UI format** (drag-and-drop onto the ComfyUI canvas) — [`workflows/ui/`](workflows/ui/): `bernini_t2v.json`, `bernini_i2i.json`. Use these in the app: just drop the file on the canvas (or *Workflow → Open*). Validated to load and run in a real ComfyUI (the `BR_PATH` Load Model → VAE/Text Encode wiring is drawn for you).
-- **API format** (for the `/prompt` endpoint, Modal, or *Workflow → Open (API)*) — [`workflows/`](workflows/): `bernini_t2v`, `bernini_t2i`, `bernini_i2i`, `bernini_v2v`, `bernini_rv2v`, `bernini_r2v`.
+- **API format** (for the `/prompt` endpoint or *Workflow → Open (API)*) — [`workflows/`](workflows/): `bernini_t2v`, `bernini_t2i`, `bernini_i2i`, `bernini_v2v`, `bernini_rv2v`, `bernini_r2v`.
 
 > The video workflows (`v2v`, `rv2v`) load frames with the built-in **BerniniR · Load Video** node (webp/gif via PIL — no extra dependency; put the file in `ComfyUI/input`). For `mp4`/`avi`, use `VHS_LoadVideo` from **ComfyUI-VideoHelperSuite** and wire it into the same `source_video` input.
 
@@ -102,7 +102,7 @@ Notes:
 
 Each expert is 40 `WanTransformerBlock`s. `blocks_to_swap=N` keeps the **last N** blocks on CPU and streams them to the GPU one at a time during their own forward (the rest stay resident). It cuts the **weight** footprint of the active expert — orthogonal to `fp8` and `offload_experts`, and it works for **every** task (editing included), unlike the GGUF path. It does **not** reduce activation memory (driven by resolution/frames), so combine it with lower resolution if you're activation-bound.
 
-It does not change the math: moving weights CPU↔GPU is numerically a no-op. Verified — full i2i pipeline `blocks_to_swap=0` vs `30` produces a **bit-identical** image on the same GPU (`modal/app.py::bswap_i2i_gate`).
+It does not change the math: moving weights CPU↔GPU is numerically a no-op. Verified — the full i2i pipeline with `blocks_to_swap=0` vs `30` produces a **bit-identical** image on the same GPU (same seed, real fp8 weights).
 
 Measured sampling peak (fp8, NVIDIA A10), with the speed cost:
 
@@ -129,38 +129,6 @@ For GGUF, pass the native `.safetensors` through [`city96/ComfyUI-GGUF`](https:/
 
 ---
 
-## Validate on Modal (serverless GPU)
-
-The weights are ~160GB and the 28B model wants an A100-80GB-class GPU for the full bf16 path, so the end-to-end run is validated in the cloud. Harness included in [`modal/app.py`](modal/app.py):
-
-```bash
-pip install modal && modal token new          # once
-
-# 1) download the weights to a Modal Volume (~126GB, once)
-modal run modal/app.py::download_weights
-
-# 2) cheap numeric check: load BOTH real experts (bf16) and run 1 multi-stream
-#    forward (shapes + NaN). Add --fp8 to also exercise the quantized path.
-modal run modal/app.py::smoke
-
-# 3) run a full workflow headless and save the result to the Volume.
-#    Overrides (to make the first run cheap): --num-frames, --steps, --width,
-#    --height, --fp8, --gen-input <name.png> (generates a test image for i2i).
-modal run modal/app.py::run --workflow workflows/bernini_t2v.json --num-frames 25 --steps 20 --fp8
-
-# 4) the 24GB target: pick the GPU via env var, then run i2i/t2v with fp8 + offload.
-#    nodes.py reports peak VRAM per stage.
-#    PowerShell:  $env:BERNINIR_GPU="A10G"; modal run modal/app.py::run --workflow workflows/bernini_i2i.json --steps 20 --gen-input input.png --fp8
-#    bash:        BERNINIR_GPU=A10G modal run modal/app.py::run --workflow workflows/bernini_i2i.json --steps 20 --gen-input input.png --fp8
-
-# 5) download results
-modal volume get berninir-out / ./outputs
-```
-
-The harness builds a CUDA 12.4 + torch 2.5.1 image (Bernini's stack), clones ComfyUI, mounts this custom node, starts the headless server and posts the workflow to the `/prompt` endpoint. `gpu` and CPU `memory` are parameterizable via `BERNINIR_GPU` / `BERNINIR_CPU_MEM` (read when the app is defined).
-
----
-
 ## Validation status
 
 This port is built against Bernini's **verbatim source** (github.com/bytedance/Bernini) and the **real code** of `diffusers==0.35.2` and current ComfyUI. Verified so far:
@@ -169,7 +137,7 @@ This port is built against Bernini's **verbatim source** (github.com/bytedance/B
 - End-to-end wiring of `t2v` / `rv2v` / `r2v_apg` runs without exceptions, returns `[1,16,T,H,W]`, no NaNs.
 - **Fidelity anchor (C1):** with a single `source_id=0` target stream, `BerniniExpert.forward_streams` matches the **stock diffusers `WanTransformer3DModel.forward`** to `torch.allclose` (max abs diff ~6e-7) — confirming the complex source-id RoPE is numerically equivalent to diffusers' cos/sin RoPE at the identity phase.
 
-**On Modal (real weights, A100-80GB and A10):**
+**With the real weights (A100-80GB / A10):**
 - **Smoke (bf16):** both real experts load and the multi-stream forward (2 steps straddling the t=875 boundary, exercising both experts) runs with no NaNs.
 - **t2v / i2i render** produce coherent output. For **i2i**, the result preserves the source image's content/composition **and** applies the prompt edit — i.e., the **cross-stream source-id mechanism works** (the target stream attends to the reference stream under distinct id phases).
 - **fp8 quantization (e4m3 weight-only + upcast) does not visibly degrade quality** and is faster than bf16; the monkeypatch quantizes 401 linear layers per expert and runs cleanly.

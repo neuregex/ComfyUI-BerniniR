@@ -186,8 +186,8 @@ class BerniniExpert(torch.nn.Module):
                 # Transferencia SÍNCRONA (sin non_blocking): elección conservadora. El
                 # streaming H2D/D2H ya es el cuello de botella del block-swap, así que el
                 # coste de sincronizar es marginal y evita cualquier carrera D2H↔allocator.
-                # (Validado: bs=0 vs bs=30 da imagen i2i BIT-IDÉNTICA en misma GPU; mover
-                #  pesos no cambia la matemática — ver modal/app.py::bswap_i2i_gate.)
+                # (Validado: bs=0 vs bs=30 da imagen i2i BIT-IDÉNTICA en la misma GPU con
+                #  el mismo seed; mover pesos no cambia la matemática.)
                 block.to(dev)
                 hidden = block(hidden, enc_text, timestep_proj, rotary)
                 block.to("cpu")

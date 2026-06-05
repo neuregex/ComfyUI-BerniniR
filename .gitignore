@@ -80,7 +80,7 @@ desktop.ini
 *.log
 *.tmp
 
-# salidas de validación (descargadas del Volume Modal)
+# salidas de validación (renders locales)
 resultados/
 
 # --- Archivos locales de herramientas/dev (no forman parte del paquete) ---
