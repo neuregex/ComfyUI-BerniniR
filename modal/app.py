@@ -96,6 +96,30 @@ def build_fp8(src: str = "Bernini-R-Diffusers", dst: str = "Bernini-R-fp8"):
     print(f"[ok] bundle fp8 en el Volume: {MODELS_DIR}/{dst}")
 
 
+@app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60 * 3,
+              container_idle_timeout=60, secrets=[modal.Secret.from_name("huggingface")])
+def upload_fp8(repo: str = "neuregex/Bernini-R-fp8", src: str = "Bernini-R-fp8"):
+    """Sube el bundle fp8 del Volume a HuggingFace: create_repo + model card +
+    upload_large_folder (resumible). Requiere un Modal secret 'huggingface' con
+    HF_TOKEN (write). El bundle no pasa por tu máquina (se sube desde Modal)."""
+    import os
+    from huggingface_hub import create_repo, login, upload_large_folder
+    token = os.environ["HF_TOKEN"]
+    login(token=token, add_to_git_credential=False)
+    folder = f"{MODELS_DIR}/{src}"
+    # model card -> README.md del bundle
+    card_src = "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR/tools/bernini_fp8_model_card.md"
+    with open(card_src) as f:
+        card = f.read()
+    with open(os.path.join(folder, "README.md"), "w") as f:
+        f.write(card)
+    print(f"[*] create_repo {repo} (model)")
+    create_repo(repo, repo_type="model", exist_ok=True, token=token)
+    print(f"[*] upload_large_folder {folder} -> {repo}")
+    upload_large_folder(repo_id=repo, folder_path=folder, repo_type="model")
+    print(f"[ok] subido: https://huggingface.co/{repo}")
+
+
 @app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 30,
               container_idle_timeout=60, memory=CPU_MEM)
 def smoke(fp8: bool = False):
