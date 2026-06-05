@@ -96,6 +96,113 @@ def build_fp8(src: str = "Bernini-R-Diffusers", dst: str = "Bernini-R-fp8"):
     print(f"[ok] bundle fp8 en el Volume: {MODELS_DIR}/{dst}")
 
 
+@app.function(image=image, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT}, timeout=60 * 15,
+              container_idle_timeout=60)
+def node_info():
+    """Arranca ComfyUI (CPU) y vuelca el spec /object_info de los nodos BerniniR:
+    confirma que REGISTRAN y da el orden/tipos de inputs/outputs (para generar el
+    UI-format correcto)."""
+    import json
+    import urllib.request
+    comfy = _Comfy(cpu=True)
+    info = json.loads(urllib.request.urlopen(
+        f"http://127.0.0.1:{comfy.port}/object_info").read())
+    names = sorted(k for k in info if k.startswith("BerniniR"))
+    print(f"[*] nodos BerniniR registrados: {names}")
+    for name in names:
+        n = info[name]
+        req = n["input"].get("required", {})
+        opt = n["input"].get("optional", {})
+        outs = list(zip(n.get("output_name", []), n.get("output", [])))
+        print(f"=== {name} ===")
+        print("  req:", [(k, (v[0] if isinstance(v, list) and v else v)) for k, v in req.items()])
+        print("  opt:", [(k, (v[0] if isinstance(v, list) and v else v)) for k, v in opt.items()])
+        print("  out:", outs)
+    print("[ok] object_info OK")
+
+
+# imagen derivada con Playwright+chromium (no toca la imagen principal)
+gui_image = (image.pip_install("playwright")
+             .run_commands("playwright install --with-deps chromium"))
+
+
+@app.function(image=gui_image, gpu=GPU, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT},
+              timeout=60 * 30, container_idle_timeout=60, memory=CPU_MEM)
+def gui_smoke(model_subdir: str = "Bernini-R-fp8"):
+    """GUI smoke en ComfyUI REAL (headless + Playwright, mismo contenedor):
+    carga cada API-workflow en el frontend, deja que ComfyUI SERIALICE el UI-format
+    (sin scripting frágil), valida que el grafo deserializa con la conexión BR_PATH,
+    y corre un i2i end-to-end vía graphToPrompt. Deja los *_ui.json en el Volume out."""
+    import json
+    import os
+    import time
+    import urllib.request
+    from playwright.sync_api import sync_playwright
+
+    base = "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR"
+    # pesos: symlink para que el loader (source=fp8 auto) los halle sin descargar 40GB
+    link_dir = "/root/ComfyUI/models/bernini"
+    os.makedirs(link_dir, exist_ok=True)
+    tgt = os.path.join(link_dir, model_subdir)
+    if not os.path.exists(tgt):
+        os.symlink(f"{MODELS_DIR}/{model_subdir}", tgt)
+    os.makedirs("/root/ComfyUI/input", exist_ok=True)
+    _make_test_landscape("/root/ComfyUI/input/input.png", 848, 848)
+
+    comfy = _Comfy()   # GPU
+    port = comfy.port
+    wfs = {w: json.loads(open(f"{base}/workflows/{w}.json").read())
+           for w in ("bernini_t2v", "bernini_i2i")}
+    results = {}
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+        page = browser.new_page()
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="domcontentloaded")
+        page.wait_for_function("() => !!(window.app && window.app.graph)", timeout=120000)
+        methods = page.evaluate(
+            "() => Object.getOwnPropertyNames(Object.getPrototypeOf(window.app))"
+            ".filter(k=>{try{return typeof window.app[k]==='function'}catch(e){return false}}).sort()")
+        print("[*] app methods:", methods)
+
+        for name, api in wfs.items():
+            ui = page.evaluate("""async (api) => {
+                window.app.graph.clear();
+                await window.app.loadApiJson(api, 'x.json');
+                await new Promise(r => setTimeout(r, 400));
+                return window.app.graph.serialize();
+            }""", api)
+            types = sorted(set(n["type"] for n in ui["nodes"]))
+            brp = [l for l in ui["links"] if (l[5] if len(l) > 5 else None) == "BR_PATH"]
+            print(f"[{name}] nodos={len(ui['nodes'])} | tipos={types} | links BR_PATH={len(brp)}")
+            with open(f"{OUT_DIR}/{name}_ui.json", "w") as f:
+                json.dump(ui, f, indent=2)
+            results[name] = {"nodes": len(ui["nodes"]), "br_path_links": len(brp), "types": types}
+
+        # RUN i2i: cargar -> graphToPrompt -> /prompt -> poll
+        page.evaluate("""async (api) => { window.app.graph.clear();
+            await window.app.loadApiJson(api, 'i2i.json'); }""", wfs["bernini_i2i"])
+        prompt = page.evaluate("async () => (await window.app.graphToPrompt()).output")
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/prompt",
+                                     data=json.dumps({"prompt": prompt}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        pid = json.loads(urllib.request.urlopen(req).read())["prompt_id"]
+        print("[*] i2i prompt_id (desde el grafo UI):", pid)
+        hist = {}
+        for _ in range(600):
+            hist = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/history/{pid}").read())
+            if pid in hist:
+                break
+            time.sleep(2)
+        outs = hist.get(pid, {}).get("outputs", {})
+        results["i2i_run_outputs"] = outs
+        print("[ok] i2i run end-to-end desde UI:", json.dumps(outs)[:300])
+        browser.close()
+
+    OUT.commit()
+    print("[RESULT]", json.dumps(results)[:600])
+
+
 @app.function(image=image, volumes={MODELS_DIR: MODELS}, timeout=60 * 60 * 3,
               container_idle_timeout=60, secrets=[modal.Secret.from_name("hf-secret")])
 def upload_fp8(repo: str = "neuregex/Bernini-R-fp8", src: str = "Bernini-R-fp8"):
@@ -200,12 +307,13 @@ def _make_test_landscape(path, w=848, h=848):
 
 class _Comfy:
     """Cliente mínimo del servidor ComfyUI headless."""
-    def __init__(self, port=8188):
+    def __init__(self, port=8188, cpu=False):
         self.port = port
-        self.proc = subprocess.Popen(
-            ["python", "main.py", "--listen", "127.0.0.1", "--port", str(port),
-             "--output-directory", OUT_DIR],
-            cwd="/root/ComfyUI")
+        cmd = ["python", "main.py", "--listen", "127.0.0.1", "--port", str(port),
+               "--output-directory", OUT_DIR]
+        if cpu:
+            cmd.append("--cpu")   # /object_info / carga de grafo no necesitan GPU
+        self.proc = subprocess.Popen(cmd, cwd="/root/ComfyUI")
         for _ in range(120):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=2)
