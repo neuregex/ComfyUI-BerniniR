@@ -141,9 +141,19 @@ def _ensure_weights(repo_id, dst, auto_download):
             f"[BerniniR] Faltan pesos de '{repo_id}' en {dst}. Activa auto_download, o "
             f"descárgalos a mano:\n  huggingface-cli download {repo_id} --local-dir \"{dst}\"")
 
-    # xet OFF por defecto (evita el cuelgue del transporte xet en Windows/portable).
-    # Para forzar xet: exporta HF_HUB_DISABLE_XET=0 antes de lanzar ComfyUI.
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    # xet OFF de forma fiable y SILENCIOSA (el usuario no toca NADA). El transporte
+    # xet de HF puede colgarse en Windows/portable; HTTPS clásico es estable. No basta
+    # os.environ: huggingface_hub congela constants.HF_HUB_DISABLE_XET al importar, pero
+    # is_xet_available() la lee EN VIVO -> la fijamos directamente. Respeta override del
+    # usuario (HF_HUB_DISABLE_XET=0 deja xet activo para quien lo quiera).
+    if os.environ.get("HF_HUB_DISABLE_XET") is None:
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+    if os.environ.get("HF_HUB_DISABLE_XET", "1") not in ("0", "false", "False"):
+        try:
+            import huggingface_hub.constants as _hc
+            _hc.HF_HUB_DISABLE_XET = True
+        except Exception:
+            pass
 
     import shutil as _sh
     from huggingface_hub import snapshot_download

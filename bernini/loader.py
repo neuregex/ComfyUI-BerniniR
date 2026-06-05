@@ -90,6 +90,53 @@ def _is_fp8_repo(model_dir, subfolder):
     return False
 
 
+def _st_expected_size(path):
+    """Tamaño en bytes que IMPLICA el header del safetensors: 8 (u64 LE = N) + N
+    (JSON del header) + fin del último tensor (max data_offsets[1]). Se lee SOLO el
+    header (KB), no los 14GB ni red. Permite detectar archivos TRUNCADOS antes de
+    mapearlos."""
+    import json
+    import struct
+    with open(path, "rb") as f:
+        head = f.read(8)
+        if len(head) < 8:
+            raise RuntimeError(f"safetensors inválido (8 bytes de cabecera ausentes): {path}")
+        n = struct.unpack("<Q", head)[0]
+        meta = json.loads(f.read(n))
+    end = max((v["data_offsets"][1] for k, v in meta.items()
+               if k != "__metadata__" and isinstance(v, dict) and "data_offsets" in v),
+              default=0)
+    return 8 + n + end
+
+
+def _safe_load(shard):
+    """Carga un .safetensors VERIFICANDO antes que no esté truncado. Si pesa menos de
+    lo que su header declara (descarga incompleta/corrupta), lanza un error CLARO en
+    vez de dejar que `load_file` mapee y lea fuera de fichero -> el proceso muere con
+    'Windows fatal exception: access violation' (segfault), imposible de capturar.
+    Con BERNINIR_NO_MMAP=1 carga por bytes (sin mmap) como último recurso ante bugs
+    de mmap+fp8 en Windows (cuesta ~tamaño-de-archivo de RAM extra)."""
+    actual = os.path.getsize(shard)
+    try:
+        expected = _st_expected_size(shard)
+    except Exception as e:
+        raise RuntimeError(
+            f"[BerniniR] no pude leer el header de '{shard}' ({e}). Probablemente está "
+            f"corrupto: bórralo y re-descarga.")
+    if actual < expected:
+        raise RuntimeError(
+            f"[BerniniR] modelo CORRUPTO/INCOMPLETO: '{os.path.basename(shard)}' pesa "
+            f"{actual:,} bytes pero su header espera {expected:,} ({100*actual/expected:.1f}%). "
+            f"La descarga quedó a medias. Borra ese archivo (o toda la carpeta del repo) y "
+            f"re-ejecuta con auto_download (es resumible); idealmente con HF_HUB_DISABLE_XET=1.")
+    if os.environ.get("BERNINIR_NO_MMAP") in ("1", "true", "True"):
+        from safetensors.torch import load as _load_bytes
+        with open(shard, "rb") as f:
+            return _load_bytes(f.read())
+    from safetensors.torch import load_file
+    return load_file(shard)
+
+
 def _load_prefp8(model_dir, subfolder):
     """Carga un WanTransformer3DModel PRE-fp8 preservando el dtype e4m3 del disco:
     init_empty_weights (sin tocar buffers no persistentes como el rope) +
@@ -97,7 +144,6 @@ def _load_prefp8(model_dir, subfolder):
     luego apply_fp8_forward_ parchea solo los Linear fp8."""
     import glob
     from accelerate import init_empty_weights
-    from safetensors.torch import load_file
     from diffusers import WanTransformer3DModel
 
     config = WanTransformer3DModel.load_config(model_dir, subfolder=subfolder)
@@ -105,7 +151,7 @@ def _load_prefp8(model_dir, subfolder):
         m = WanTransformer3DModel.from_config(config)
     sd = {}
     for shard in sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors"))):
-        sd.update(load_file(shard))
+        sd.update(_safe_load(shard))
     missing, unexpected = m.load_state_dict(sd, strict=False, assign=True)
     if missing:
         print(f"[BerniniR] fp8 load {subfolder}: {len(missing)} missing (ej: {missing[:2]})")
