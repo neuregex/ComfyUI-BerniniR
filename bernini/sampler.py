@@ -35,16 +35,19 @@ class BerniniSampler:
         self.p = {**C.DEFAULTS, **params}
         self.offload = offload_experts
 
-    # -- offload: mantener solo el experto activo en GPU ----------------------
+    # -- offload / block-swap: colocación del experto activo en GPU ------------
     def _activate(self, expert, device):
-        if not self.offload or self.r.low is None:
+        # gestiona la colocación cuando hay offload O block-swap (block_swap>0 implica
+        # mover solo lo residente; el inactivo va full-CPU). Sin ninguno de los dos, el
+        # loader ya dejó ambos expertos en GPU -> nada que hacer.
+        bs = getattr(expert, "block_swap", 0)
+        if self.r.low is None or not (self.offload or bs):
             return
         other = self.r.low if expert is self.r.high else self.r.high
-        if other is not None and next(other.t.parameters()).device.type != "cpu":
-            other.t.to("cpu")
+        if other is not None:
+            other.to_idle()
             torch.cuda.empty_cache()
-        if next(expert.t.parameters()).device != torch.device(device):
-            expert.t.to(device)
+        expert.to_active(device)
 
     def _apg_sigma(self, t_idx):
         # sigmas[t_idx] = nivel de ruido al INICIO del paso actual. Equivale a

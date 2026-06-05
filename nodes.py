@@ -141,6 +141,8 @@ class BerniniRModelLoader:
             "fp8": ("BOOLEAN", {"default": True, "tooltip": "Cuantiza on-the-fly a fp8 si el repo es bf16 (el bundle fp8 ya viene cuantizado)."}),
             "offload_experts": ("BOOLEAN", {"default": True, "tooltip": "Mantén solo el experto activo en GPU (high/low se intercambian)."}),
         }, "optional": {
+            "blocks_to_swap": ("INT", {"default": 0, "min": 0, "max": 40,
+                "tooltip": "N de los 40 bloques del transformer viven en CPU y se streamean a GPU por bloque (baja VRAM, más lento). 0 = off. Sube hasta caber en 16/12GB."}),
             "model_dir": ("STRING", {"default": "Bernini-R-Diffusers", "tooltip": "Ruta local de los pesos (solo si source='local')."}),
         }}
 
@@ -152,7 +154,7 @@ class BerniniRModelLoader:
     CATEGORY = "BerniniR"
 
     def load(self, source, auto_download, download_dir, dtype, fp8, offload_experts,
-             model_dir="Bernini-R-Diffusers"):
+             blocks_to_swap=0, model_dir="Bernini-R-Diffusers"):
         if source == "local":
             resolved = _resolve_dir(model_dir)
             if not _has_weights(resolved):
@@ -161,12 +163,14 @@ class BerniniRModelLoader:
             repo_id = _HF_REPOS[source]
             resolved = os.path.join(_resolve_dir(download_dir), repo_id.split("/")[-1])
             _ensure_weights(repo_id, resolved, auto_download)
+        bs = int(blocks_to_swap)
         hi, lo = load_experts(resolved, dtype=dtype, fp8=fp8, device="cpu")
         renderer = BerniniRenderer(
-            high=BerniniExpert(hi, use_src_id_rotary_emb=True),
-            low=BerniniExpert(lo, use_src_id_rotary_emb=True) if lo is not None else None,
+            high=BerniniExpert(hi, use_src_id_rotary_emb=True, block_swap=bs),
+            low=BerniniExpert(lo, use_src_id_rotary_emb=True, block_swap=bs) if lo is not None else None,
         )
-        if not offload_experts:
+        # con block-swap (o offload) el sampler coloca; sin ninguno, pre-colocamos en GPU.
+        if not offload_experts and not bs:
             renderer.high.t.to(_device())
             if renderer.low is not None:
                 renderer.low.t.to(_device())

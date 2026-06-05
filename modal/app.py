@@ -361,7 +361,8 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
         gen_input: str = "", src_video: str = "", prompt: str = "",
         model_subdir: str = "Bernini-R-Diffusers",
         hf_source: str = "", download_dir: str = "",
-        input_image: str = "", omega_i: float = 0.0, omega_v: float = 0.0, omega_ti: float = 0.0):
+        input_image: str = "", omega_i: float = 0.0, omega_v: float = 0.0, omega_ti: float = 0.0,
+        blocks_to_swap: int = 0):
     """Ejecuta un workflow (formato API) en ComfyUI headless y guarda en el Volume.
 
     `workflow` es una ruta RELATIVA dentro del custom node (p.ej.
@@ -405,6 +406,7 @@ def run(workflow: str = "workflows/bernini_t2v.json", fp8: bool = False,
                 ins["auto_download"] = False
                 ins["model_dir"] = f"{MODELS_DIR}/{model_subdir}"
             ins["fp8"] = bool(fp8)
+            ins["blocks_to_swap"] = int(blocks_to_swap)
         if ct == "BerniniRSampler":
             if num_frames:
                 ins["num_frames"] = int(num_frames)
