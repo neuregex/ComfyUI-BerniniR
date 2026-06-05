@@ -109,13 +109,52 @@ def _st_expected_size(path):
     return 8 + n + end
 
 
+# Mapa de dtypes de safetensors -> torch, para leer los tensores a mano.
+_ST_DTYPE = {
+    "F64": "float64", "F32": "float32", "F16": "float16", "BF16": "bfloat16",
+    "F8_E4M3": "float8_e4m3fn", "F8_E5M2": "float8_e5m2",
+    "I64": "int64", "I32": "int32", "I16": "int16", "I8": "int8",
+    "U8": "uint8", "BOOL": "bool",
+}
+
+
+def _manual_load(path):
+    """Carga un .safetensors SIN usar safetensors.torch.load_file: lee cada tensor como
+    bytes y lo reinterpreta (uint8 -> view(dtype) -> reshape). Esquiva la materialización
+    fp8 de safetensors, que en ciertos stacks (visto: torch 2.8 + safetensors 0.7, Windows)
+    segfaultea con 'access violation' en torch/storage.py al construir tensores F8_E4M3.
+    Más lento (bucle en Python sobre ~1000 tensores) pero a prueba de balas; sin mmap."""
+    import json
+    import struct
+    out = {}
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(n))
+        base = 8 + n
+        for name, meta in header.items():
+            if name == "__metadata__":
+                continue
+            dtname = _ST_DTYPE.get(meta["dtype"])
+            if dtname is None:
+                raise RuntimeError(f"[BerniniR] dtype safetensors no soportado: {meta['dtype']}")
+            dt = getattr(torch, dtname)
+            s, e = meta["data_offsets"]
+            shape = meta["shape"]
+            if e > s:
+                f.seek(base + s)
+                raw = bytearray(f.read(e - s))                  # mutable -> tensor escribible
+                t = torch.frombuffer(raw, dtype=torch.uint8).view(dt)
+                out[name] = (t.reshape(shape) if shape else t.reshape(())).clone()
+            else:
+                out[name] = torch.empty(shape, dtype=dt)        # tensor vacío
+    return out
+
+
 def _safe_load(shard):
-    """Carga un .safetensors VERIFICANDO antes que no esté truncado. Si pesa menos de
-    lo que su header declara (descarga incompleta/corrupta), lanza un error CLARO en
-    vez de dejar que `load_file` mapee y lea fuera de fichero -> el proceso muere con
-    'Windows fatal exception: access violation' (segfault), imposible de capturar.
-    Con BERNINIR_NO_MMAP=1 carga por bytes (sin mmap) como último recurso ante bugs
-    de mmap+fp8 en Windows (cuesta ~tamaño-de-archivo de RAM extra)."""
+    """Verifica que el .safetensors no esté truncado (error claro en vez de segfault) y
+    materializa los tensores A MANO (_manual_load) para esquivar el bug de carga fp8 de
+    safetensors. `load_file` mapearía el archivo y, en torch 2.8 + safetensors 0.7
+    (Windows), revienta con access violation al construir los F8_E4M3."""
     actual = os.path.getsize(shard)
     try:
         expected = _st_expected_size(shard)
@@ -129,12 +168,7 @@ def _safe_load(shard):
             f"{actual:,} bytes pero su header espera {expected:,} ({100*actual/expected:.1f}%). "
             f"La descarga quedó a medias. Borra ese archivo (o toda la carpeta del repo) y "
             f"re-ejecuta con auto_download (es resumible); idealmente con HF_HUB_DISABLE_XET=1.")
-    if os.environ.get("BERNINIR_NO_MMAP") in ("1", "true", "True"):
-        from safetensors.torch import load as _load_bytes
-        with open(shard, "rb") as f:
-            return _load_bytes(f.read())
-    from safetensors.torch import load_file
-    return load_file(shard)
+    return _manual_load(shard)
 
 
 def _load_prefp8(model_dir, subfolder):
