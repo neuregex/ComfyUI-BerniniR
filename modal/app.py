@@ -96,6 +96,156 @@ def build_fp8(src: str = "Bernini-R-Diffusers", dst: str = "Bernini-R-fp8"):
     print(f"[ok] bundle fp8 en el Volume: {MODELS_DIR}/{dst}")
 
 
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 20,
+              container_idle_timeout=60, memory=CPU_MEM)
+def bswap_check(model_subdir: str = "Bernini-R-fp8"):
+    """Diagnóstico: UN experto fp8 en GPU, un forward con bs=0 vs bs=30 -> ¿idéntico?
+    Aísla el streaming fp8 de un experto de la interacción dual-expert/sampler."""
+    import sys
+    import torch
+    sys.path.insert(0, "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
+    from bernini import load_experts, BerniniExpert
+    from bernini.model import Stream
+    md = f"{MODELS_DIR}/{model_subdir}"
+    hi, _ = load_experts(md, dtype="bf16", fp8=False, device="cpu")
+    e = BerniniExpert(hi)
+    dev = "cuda"
+    g = torch.Generator(device=dev).manual_seed(0)
+    pos = torch.randn(1, 512, 4096, device=dev, dtype=torch.bfloat16, generator=g)
+    # condiciones de la i2i: 848² (latente 106x106), 2 streams (imagen src_id=1 + target)
+    img = torch.randn(1, 16, 1, 106, 106, device=dev, generator=g)
+    tgt = torch.randn(1, 16, 1, 106, 106, device=dev, generator=g)
+    ts = torch.tensor([500.0], device=dev)
+    streams = [Stream(img, 1), Stream(tgt, 0, is_target=True)]
+    n = len(e.t.blocks)
+    with torch.no_grad():
+        e.block_swap = 0; e._swap_idx = frozenset()
+        e.to_active(dev)
+        o0 = e.forward_streams(streams, pos, ts).float().cpu()
+        e.block_swap = 30; e._swap_idx = frozenset(range(n - 30, n))
+        e.to_active(dev)
+        o30 = e.forward_streams(streams, pos, ts).float().cpu()
+    print(f"[bswap_check] 1 experto fp8 GPU (848^2, 2 streams): bs0 vs bs30 max abs diff = {(o0 - o30).abs().max().item()}")
+    del e, hi
+
+
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 25,
+              container_idle_timeout=60, memory=CPU_MEM)
+def bswap_dual(model_subdir: str = "Bernini-R-fp8"):
+    """Reproduce el bug dual-expert: mini-sampler v2v (2 expertos + switch) en GPU,
+    bs=0 vs bs=30, con y sin offload, para aislar offload+block_swap."""
+    import sys
+    import torch
+    sys.path.insert(0, "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
+    from bernini import load_experts, BerniniExpert, BerniniRenderer, BerniniSampler
+    from bernini import latents as L
+    md = f"{MODELS_DIR}/{model_subdir}"
+    dev = "cuda"
+    shape = L.latent_shape(num_frames=1, height=848, width=848)        # MISMA escala que la i2i real
+    g = torch.Generator(device=dev).manual_seed(7)
+    img = torch.randn(1, 16, 1, shape[3], shape[4], device=dev, generator=g)  # stream imagen fijo
+    pos = torch.zeros(1, 512, 4096, device=dev, dtype=torch.bfloat16)
+    neg = torch.zeros(1, 512, 4096, device=dev, dtype=torch.bfloat16)
+    n = None
+
+    def run_once(bs, offload):
+        nonlocal n
+        hi, lo = load_experts(md, dtype="bf16", fp8=False, device="cpu")
+        r = BerniniRenderer(high=BerniniExpert(hi), low=BerniniExpert(lo))
+        n = len(r.high.t.blocks)
+        for e in (r.high, r.low):
+            e.block_swap = bs
+            e._swap_idx = frozenset(range(n - bs, n)) if bs else frozenset()
+        if not offload and not bs:          # mimetiza el pre-place del loader
+            r.high.t.to(dev); r.low.t.to(dev)
+        s = BerniniSampler(r, "v2v", dict(num_inference_steps=20), offload_experts=offload)
+        out = s.sample([], [img], pos, neg, shape, device=dev, seed=42,
+                       base_scheduler_dir=f"{md}/scheduler")
+        if bs:  # verifica placement del experto low tras un sample
+            print(f"   [dev] bs={bs} off={offload}: patch_emb={r.low.t.patch_embedding.weight.device} "
+                  f"blk0={next(r.low.t.blocks[0].parameters()).device} "
+                  f"blk{n-1}={next(r.low.t.blocks[n-1].parameters()).device}")
+        out = out.float().cpu()
+        del r, hi, lo
+        torch.cuda.empty_cache()
+        return out
+
+    ref_off = run_once(0, True)
+    a_off = run_once(30, True)
+    print(f"[bswap_dual] offload=True (config i2i): bs0 vs bs30 max abs diff = {(ref_off - a_off).abs().max().item():.6f}")
+
+
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT}, timeout=60 * 40,
+              container_idle_timeout=60, memory=CPU_MEM)
+def bswap_i2i_gate(model_subdir: str = "Bernini-R-fp8", steps: int = 20):
+    """GATE de correctitud EXACTO del usuario: pipeline i2i COMPLETO (VAE-encode del
+    paisaje + texto UMT5 real + sample dual-expert + VAE-decode) ejecutado DOS veces en
+    el MISMO proceso/GPU — bs=0 vs bs=30 — comparando las IMÁGENES decodificadas. Misma
+    GPU física => controla la divergencia de trayectoria cross-run. Debe ser ~bit-idéntico."""
+    import sys
+    import numpy as np
+    import torch
+    from PIL import Image
+    sys.path.insert(0, "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
+    from bernini import load_experts, load_vae, TextEncoder, BerniniExpert, BerniniRenderer, BerniniSampler
+    from bernini import latents as L, constants as Cc
+    md = f"{MODELS_DIR}/{model_subdir}"
+    dev = "cuda"
+    H = W = 848
+    seed = 42
+    prompt = "change the scene to golden-hour daylight"
+
+    # 1) imagen de prueba determinista -> [1,C,1,H,W] en [-1,1]
+    _make_test_landscape("/tmp/land.png", W, H)
+    arr = np.asarray(Image.open("/tmp/land.png").convert("RGB"), dtype=np.float32) / 255.0
+    x = torch.from_numpy(arr).permute(2, 0, 1)[None, :, None].to(dev) * 2.0 - 1.0   # [1,C,1,H,W]
+
+    # 2) VAE-encode (imagen) — VAE en GPU, luego a CPU
+    vae = load_vae(md, dtype="fp16", device="cpu"); vae.to(dev)
+    img_lat = L.vae_encode(vae, x.to(vae.dtype)).cpu()
+    vae.to("cpu"); torch.cuda.empty_cache()
+
+    # 3) texto UMT5 real (pos con prefijo de tarea i2i, neg sin prefijo)
+    te = TextEncoder(md, dtype="bf16", device=dev)
+    prefix = Cc.get_system_prompt_for_task("i2i")
+    pos = te.encode(prompt, system_prefix=prefix).cpu()
+    neg = te.encode(Cc.DEFAULT_NEG_PROMPT, system_prefix="").cpu()
+    del te; torch.cuda.empty_cache()
+
+    # 4) expertos UNA vez; alterno block_swap entre las dos pasadas
+    hi, lo = load_experts(md, dtype="bf16", fp8=False, device="cpu")
+    r = BerniniRenderer(high=BerniniExpert(hi), low=BerniniExpert(lo))
+    n = len(r.high.t.blocks)
+    mode = Cc.TASK_TO_GUIDANCE.get("i2i", "v2v")
+    shape = L.latent_shape(num_frames=1, height=H, width=W)
+
+    def run(bs):
+        for e in (r.high, r.low):
+            e.block_swap = bs
+            e._swap_idx = frozenset(range(n - bs, n)) if bs else frozenset()
+        s = BerniniSampler(r, mode, dict(num_inference_steps=steps), offload_experts=True)
+        lat = s.sample([], [img_lat.to(dev)], pos.to(dev), neg.to(dev), shape,
+                       device=dev, seed=seed, base_scheduler_dir=f"{md}/scheduler")
+        r.high.to_idle(); r.low.to_idle(); torch.cuda.empty_cache()
+        vae.to(dev)
+        img = L.vae_decode(vae, lat.to(vae.dtype))            # [1,C,1,H,W] en [-1,1]
+        vae.to("cpu"); torch.cuda.empty_cache()
+        img = ((img.clamp(-1, 1) + 1) / 2 * 255).round()[0, :, 0].permute(1, 2, 0).float().cpu()
+        return img                                            # [H,W,C] 0..255
+
+    print(f"[gate] i2i {mode} {W}x{H} {steps} pasos — bs=0 ...")
+    im0 = run(0)
+    print(f"[gate] i2i {mode} {W}x{H} {steps} pasos — bs=30 ...")
+    im30 = run(30)
+    d = (im0 - im30).abs()
+    print(f"[bswap_i2i_gate] IMAGEN bs0 vs bs30: max abs diff = {d.max().item():.4f} "
+          f"(escala 0-255), media = {d.mean().item():.6f}")
+    # guarda before/after por si VL quiere mirar
+    Image.fromarray(im0.numpy().astype(np.uint8)).save(f"{OUT_DIR}/gate_i2i_bs0.png")
+    Image.fromarray(im30.numpy().astype(np.uint8)).save(f"{OUT_DIR}/gate_i2i_bs30.png")
+    OUT.commit()
+
+
 @app.function(image=image, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT}, timeout=60 * 15,
               container_idle_timeout=60)
 def node_info():

@@ -183,10 +183,11 @@ class BerniniExpert(torch.nn.Module):
         swap = self._swap_idx if self.block_swap else frozenset()
         for i, block in enumerate(t.blocks):
             if i in swap:
-                # SÍNCRONO a propósito: con non_blocking, el caching allocator puede
-                # reutilizar la memoria GPU del bloque antes de que termine la copia
-                # D2H -> corrompe la copia CPU y diverge (la lógica es correcta, era
-                # esto). El streaming ya es el cuello de botella, así que el coste es bajo.
+                # Transferencia SÍNCRONA (sin non_blocking): elección conservadora. El
+                # streaming H2D/D2H ya es el cuello de botella del block-swap, así que el
+                # coste de sincronizar es marginal y evita cualquier carrera D2H↔allocator.
+                # (Validado: bs=0 vs bs=30 da imagen i2i BIT-IDÉNTICA en misma GPU; mover
+                #  pesos no cambia la matemática — ver modal/app.py::bswap_i2i_gate.)
                 block.to(dev)
                 hidden = block(hidden, enc_text, timestep_proj, rotary)
                 block.to("cpu")
