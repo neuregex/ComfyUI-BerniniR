@@ -72,60 +72,75 @@ def _resolve_dir(p):
         return os.path.abspath(p)
 
 
-def _byte_progress(total_bytes):
-    """Factory de tqdm que AGREGA todas las barras de bytes de la descarga en UNA
-    barra global -> progreso REAL (%, GB, MB/s, ETA) en consola + barra de ComfyUI.
+def _dir_size(path):
+    """Suma de bytes de TODOS los archivos bajo `path`. Incluye los `.incomplete` que
+    huggingface_hub escribe en `<dst>/.cache/huggingface/download/` mientras baja, así
+    que es la señal REAL de progreso, independiente de la versión/transporte de HF."""
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
 
-    IGNORA la barra 'Fetching N files' (cuenta ARCHIVOS, no bytes): esa es la que
-    daba falsa sensación de cuelgue -> se queda en 5% (=1/19 archivos) durante los
-    minutos que tarda un shard de 14GB, sin mostrar bytes. Aquí, mientras baja ese
-    shard, el usuario ve el % real subir y los MB/s."""
-    try:
-        from tqdm import tqdm as _tqdm
-    except Exception:
-        return None
-    try:
-        from comfy.utils import ProgressBar
-        pb = ProgressBar(total_bytes) if total_bytes else None
-    except Exception:
-        pb = None
+
+def _download_with_progress(dst, total, do_download):
+    """Corre `do_download()` mientras un hilo VIGILA el tamaño en disco de `dst` y emite
+    progreso REAL por bytes (%, GB, MB/s, ETA) cada 2s -> consola + barra de ComfyUI.
+
+    NO depende del tqdm interno de HF: su barra 'Fetching N files' cuenta ARCHIVOS y se
+    queda clavada en 5% (=1/19) mientras baja un shard de 14GB -> parecía colgado. Aquí
+    vigilamos los BYTES que aterrizan en disco, que suben de verdad. Silenciamos las
+    barras de HF para no duplicar la salida."""
     import threading
     import time
-    st = {"done": 0, "t0": time.time(), "last": 0.0, "lock": threading.Lock()}
+    g = 1024 ** 3
+    try:
+        from comfy.utils import ProgressBar
+        pb = ProgressBar(total) if total else None
+    except Exception:
+        pb = None
+    stop = threading.Event()
 
-    class _AggTqdm(_tqdm):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            # snapshot_download usa unit="B" en las barras de bytes; la de archivos no.
-            self._bytes = (getattr(self, "unit", "") or "").upper().startswith("B")
-            self._prev = 0
+    def _watch():
+        t0 = time.time()
+        while not stop.is_set():
+            done = _dir_size(dst)
+            if total and done > 0:
+                el = max(time.time() - t0, 1e-6)
+                spd = done / el / (1024 ** 2)                    # MB/s medios
+                eta = (total - done) / max(done / el, 1.0) / 60  # min restantes
+                print(f"[BerniniR]  {100 * min(done, total) / total:4.1f}%  "
+                      f"{done / g:5.2f}/{total / g:.2f}GB  {spd:5.1f}MB/s  "
+                      f"ETA {max(eta, 0.0):4.1f}min", flush=True)
+                if pb:
+                    try:
+                        pb.update_absolute(min(done, total), total)
+                    except Exception:
+                        pass
+            stop.wait(2.0)
 
-        def update(self, n=1):
-            super().update(n)
-            if not self._bytes:
-                return
-            with st["lock"]:
-                st["done"] += self.n - self._prev
-                self._prev = self.n
-                done = st["done"]
-                now = time.time()
-                emit = now - st["last"] >= 1.0
-                if emit:
-                    st["last"] = now
-            if pb and total_bytes:
-                try:
-                    pb.update_absolute(min(done, total_bytes), total_bytes)
-                except Exception:
-                    pass
-            if emit and total_bytes:
-                g = 1024 ** 3
-                el = max(now - st["t0"], 1e-6)
-                spd = done / el / (1024 ** 2)                          # MB/s medios
-                eta = (total_bytes - done) / max(done / el, 1.0) / 60  # min restantes
-                print(f"[BerniniR]  {100 * done / total_bytes:4.1f}%  "
-                      f"{done / g:5.2f}/{total_bytes / g:.2f}GB  {spd:5.1f}MB/s  "
-                      f"ETA {eta:4.1f}min", flush=True)
-    return _AggTqdm
+    try:
+        from huggingface_hub.utils import disable_progress_bars
+        disable_progress_bars()
+    except Exception:
+        pass
+    watcher = threading.Thread(target=_watch, daemon=True)
+    watcher.start()
+    try:
+        do_download()
+    finally:
+        stop.set()
+        watcher.join(timeout=3)
+        try:
+            from huggingface_hub.utils import enable_progress_bars
+            enable_progress_bars()
+        except Exception:
+            pass
+        if total:
+            print(f"[BerniniR]  100.0%  {total / g:.2f}/{total / g:.2f}GB  (completo)", flush=True)
 
 
 def _ensure_weights(repo_id, dst, auto_download):
@@ -181,11 +196,10 @@ def _ensure_weights(repo_id, dst, auto_download):
             f"[BerniniR] espacio insuficiente para '{repo_id}': ~{need * 1.05 / g:.0f}GB "
             f"necesarios, solo {free / g:.0f}GB libres en {parent}.")
 
-    kw = {}
-    tq = _byte_progress(total)
-    if tq is not None:
-        kw["tqdm_class"] = tq
-    snapshot_download(repo_id=repo_id, local_dir=dst, **kw)
+    _download_with_progress(
+        dst, total,
+        lambda: snapshot_download(repo_id=repo_id, local_dir=dst),
+    )
     if not _has_weights(dst):
         raise RuntimeError(f"[BerniniR] descarga incompleta: sin transformer/*.safetensors en {dst}")
     print(f"[BerniniR] descarga completa: {dst}", flush=True)
