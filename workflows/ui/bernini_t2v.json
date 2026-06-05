@@ -13,7 +13,7 @@
       ],
       "size": [
         333.9,
-        222
+        246
       ],
       "flags": {},
       "order": 0,
@@ -138,6 +138,23 @@
             "name": "model_dir"
           },
           "link": null
+        },
+        {
+          "color_off": null,
+          "color_on": null,
+          "dir": null,
+          "label": null,
+          "localized_name": "blocks_to_swap",
+          "locked": null,
+          "name": "blocks_to_swap",
+          "nameLocked": null,
+          "removable": null,
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "blocks_to_swap"
+          },
+          "link": null
         }
       ],
       "outputs": [
@@ -189,7 +206,8 @@
         "bf16",
         true,
         true,
-        "Bernini-R-Diffusers"
+        "Bernini-R-Diffusers",
+        0
       ]
     },
     {
