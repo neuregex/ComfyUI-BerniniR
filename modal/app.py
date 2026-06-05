@@ -246,6 +246,68 @@ def bswap_i2i_gate(model_subdir: str = "Bernini-R-fp8", steps: int = 20):
     OUT.commit()
 
 
+@app.function(image=image, gpu=GPU, volumes={MODELS_DIR: MODELS}, timeout=60 * 40,
+              container_idle_timeout=60, memory=CPU_MEM)
+def bswap_bench(task: str = "i2i", frames: int = 1, height: int = 848, width: int = 848,
+                swaps: str = "0,20,30", steps: int = 6, model_subdir: str = "Bernini-R-fp8"):
+    """Mide pico de VRAM (sample + decode) y tiempo por paso para varios block_swap en
+    la MISMA GPU/proceso (cifras comparables). El pico de VRAM es independiente del nº
+    de pasos, así que `steps` chico basta. task: i2i (v2v + imagen) o t2v (sin imagen)."""
+    import sys
+    import time
+    import torch
+    sys.path.insert(0, "/root/ComfyUI/custom_nodes/ComfyUI-BerniniR")
+    from bernini import load_experts, load_vae, TextEncoder, BerniniExpert, BerniniRenderer, BerniniSampler
+    from bernini import latents as L, constants as Cc
+    md = f"{MODELS_DIR}/{model_subdir}"
+    dev = "cuda"
+    g = 1024 ** 3
+    swap_list = [int(s) for s in swaps.split(",") if s.strip() != ""]
+
+    img_lats = []
+    if task in ("i2i", "v2v", "r2v", "rv2v"):
+        from PIL import Image
+        import numpy as np
+        _make_test_landscape("/tmp/land.png", width, height)
+        arr = np.asarray(Image.open("/tmp/land.png").convert("RGB"), dtype=np.float32) / 255.0
+        x = torch.from_numpy(arr).permute(2, 0, 1)[None, :, None].to(dev) * 2.0 - 1.0
+        vae = load_vae(md, dtype="fp16", device="cpu"); vae.to(dev)
+        img_lats = [L.vae_encode(vae, x.to(vae.dtype)).cpu()]
+        vae.to("cpu"); del vae; torch.cuda.empty_cache()
+
+    torch.cuda.reset_peak_memory_stats()
+    te = TextEncoder(md, dtype="bf16", device=dev)
+    pos = te.encode("a cinematic landscape, golden hour", system_prefix=Cc.get_system_prompt_for_task(task)).cpu()
+    neg = te.encode(Cc.DEFAULT_NEG_PROMPT, system_prefix="").cpu()
+    te_peak = torch.cuda.max_memory_allocated() / g
+    del te; torch.cuda.empty_cache()
+    print(f"[bench] pico text-encode UMT5 = {te_peak:.2f}GB (transitorio, liberado antes de muestrear)")
+
+    hi, lo = load_experts(md, dtype="bf16", fp8=False, device="cpu")
+    r = BerniniRenderer(high=BerniniExpert(hi), low=BerniniExpert(lo))
+    n = len(r.high.t.blocks)
+    mode = Cc.TASK_TO_GUIDANCE.get(task, "t2v")
+    shape = L.latent_shape(num_frames=frames, height=height, width=width)
+    print(f"[bench] task={task} mode={mode} {width}x{height} frames={frames} "
+          f"(latente T={shape[2]}) steps={steps}  GPU={GPU}")
+
+    for bs in swap_list:
+        for e in (r.high, r.low):
+            e.block_swap = bs
+            e._swap_idx = frozenset(range(n - bs, n)) if bs else frozenset()
+        torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+        s = BerniniSampler(r, mode, dict(num_inference_steps=steps), offload_experts=True)
+        torch.cuda.synchronize(); t0 = time.perf_counter()
+        lat = s.sample([], img_lats and [img_lats[0].to(dev)] or [], pos.to(dev), neg.to(dev),
+                       shape, device=dev, seed=42, base_scheduler_dir=f"{md}/scheduler")
+        torch.cuda.synchronize(); dt = time.perf_counter() - t0
+        peak = torch.cuda.max_memory_allocated() / g
+        r.high.to_idle(); r.low.to_idle(); torch.cuda.empty_cache()
+        print(f"[bench] bs={bs:>2}: pico_sample={peak:5.2f}GB  t={dt:6.1f}s  "
+              f"({dt/steps:5.2f}s/paso)  [{shape[2]}x{shape[3]}x{shape[4]}]", flush=True)
+        del lat
+
+
 @app.function(image=image, volumes={MODELS_DIR: MODELS, OUT_DIR: OUT}, timeout=60 * 15,
               container_idle_timeout=60)
 def node_info():
