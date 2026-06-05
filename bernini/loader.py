@@ -211,7 +211,10 @@ def _load_prefp8(model_dir, subfolder):
     for shard in sorted(glob.glob(os.path.join(model_dir, subfolder, "*.safetensors"))):
         sd.update(_safe_load(shard, keep))
     missing, unexpected = m.load_state_dict(sd, strict=False, assign=True)
-    m._bernini_keep = keep   # mantiene vivos mmap+file mientras viva el modelo
+    m._bernini_keep = keep      # mantiene vivos mmap+file mientras viva el modelo
+    m._bernini_cpu_sd = sd      # pesos read-only mmap (CPU, perezosos): para volver a
+    #                             "aparcar" el experto en disco al hacer offload (to_idle)
+    #                             sin copiar 14.6GB a RAM.
     if missing:
         print(f"[BerniniR] fp8 load {subfolder}: {len(missing)} missing (ej: {missing[:2]})")
     if unexpected:

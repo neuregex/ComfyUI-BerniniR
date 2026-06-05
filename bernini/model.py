@@ -119,12 +119,21 @@ class BerniniExpert(torch.nn.Module):
             self.t.scale_shift_table.data = self.t.scale_shift_table.data.to(device)
 
     def to_idle(self):
-        """Manda TODO el experto (residentes + swap + no-bloque) a CPU (inactivo). Si YA
-        está en CPU no hace nada: llamar .to('cpu') sobre los tensores fp8 de SOLO-LECTURA
-        (respaldados por mmap) dispara un 'access violation' -> torch recrea el Parameter
-        sobre memoria no-escribible. Solo movemos de verdad cuando viene de GPU (ahí
-        .to('cpu') crea copias escribibles nuevas, sin tocar el mmap original)."""
-        if self.device.type != "cpu":
+        """Aparca el experto FUERA de la GPU sin meterlo en RAM. Si ya está en CPU, nada.
+        Si está en GPU, RE-ASIGNA los pesos read-only mmap originales (CPU, perezosos,
+        ~0 RAM) y libera la VRAM -> el experto inactivo vuelve a 'vivir en disco'.
+
+        Antes hacía `self.t.to('cpu')`, que copia ~14.6GB a RAM escribible y, con la RAM
+        llena, revienta (access violation / WinError 1450/1455). Re-asignar el state_dict
+        mmap (assign=True) NO copia: solo reapunta los params al mmap y suelta los tensores
+        GPU (se liberan con empty_cache en el sampler). Al reactivarse, to_active vuelve a
+        streamear los pesos a GPU desde el mmap (file cache, no commit de RAM)."""
+        if self.device.type == "cpu":
+            return
+        cpu_sd = getattr(self.t, "_bernini_cpu_sd", None)
+        if cpu_sd is not None:
+            self.t.load_state_dict(cpu_sd, strict=False, assign=True)   # re-apunta a mmap; libera GPU
+        else:
             self.t.to("cpu")
 
     @property
