@@ -88,6 +88,7 @@ It's **2×14B** (~56GB in bf16 for the transformers alone). Strategies, from mos
 | bf16 + sequential offload | A100-class | `dtype=bf16`, `offload_experts=True`. One expert on GPU at a time (each ~28GB bf16). |
 | **fp8 + offload, video 480p** | **~18.8 GB** (81 frames, measured on A10 24GB) | `fp8=True`. Each expert ~14GB; the inactive one is moved to CPU. **This is the 24GB target.** |
 | **fp8 + offload, t2i/i2i** (1 frame) | **~16.7 GB** (measured) | Images: the sequence is much shorter. Comfortable on 24GB, fits on 16GB. |
+| **fp8 + offload + block-swap** | **down to ~9.4 GB** (video 81f) / **~5 GB** (i2i) sampling | `blocks_to_swap=20…40`. Streams the last N of the 40 transformer blocks CPU↔GPU per block. See below. |
 | GGUF Q4/Q5 (advanced) | ~8–12 GB | Only the `t2v`/`t2i` path via native ComfyUI, see below. |
 
 Numbers above are real peaks (`torch.cuda.max_memory_allocated`) measured end-to-end on an **NVIDIA A10 (24GB)**: full pipeline (UMT5 → sampling over both experts → VAE decode). The binding peak is the sampling stage; the text encoder is freed before the experts are loaded, and offload keeps a single expert resident — that combination is what makes **full-length 480p video (81 frames) fit in 24GB**.
@@ -96,6 +97,23 @@ Notes:
 - `fp8` here stores the linear weights in `float8_e4m3fn` and upcasts to bf16 on every forward (slower, half the VRAM). It's the main lever for 24GB and, in practice, does not visibly degrade quality (an anchored i2i edit is ~41 dB PSNR vs bf16; free-running t2v yields a different but equally sharp sample).
 - `offload_experts=True` mirrors Bernini's behavior (moves the high-noise expert to CPU when switching to the low-noise one).
 - Lower `num_frames` and resolution to cut activation memory (attention grows with sequence length, and here the sequence includes the condition tokens).
+
+### Block-swap (`blocks_to_swap`, lower VRAM keeping editing)
+
+Each expert is 40 `WanTransformerBlock`s. `blocks_to_swap=N` keeps the **last N** blocks on CPU and streams them to the GPU one at a time during their own forward (the rest stay resident). It cuts the **weight** footprint of the active expert — orthogonal to `fp8` and `offload_experts`, and it works for **every** task (editing included), unlike the GGUF path. It does **not** reduce activation memory (driven by resolution/frames), so combine it with lower resolution if you're activation-bound.
+
+It does not change the math: moving weights CPU↔GPU is numerically a no-op. Verified — full i2i pipeline `blocks_to_swap=0` vs `30` produces a **bit-identical** image on the same GPU (`modal/app.py::bswap_i2i_gate`).
+
+Measured sampling peak (fp8, NVIDIA A10), with the speed cost:
+
+| Task | `blocks_to_swap=0` | `=20` | `=30` | speed (0 → 30) |
+|---|---|---|---|---|
+| **i2i** 848² | 14.84 GB | 8.45 GB | **5.08 GB** | +14% |
+| **t2v** 81f / 480p | 19.18 GB | 12.78 GB | **9.42 GB** | +4% |
+
+With block-swap the experts stop being the bottleneck; the binding peak becomes the **UMT5 text encoder (~10.8 GB, transient — freed before sampling)**. On a 16 GB NVIDIA T4, `i2i` at 640² **OOMs with `blocks_to_swap=0`** (the 14 GB expert won't fit) but runs at **6.28 GB sampling with `blocks_to_swap=40`** — i.e. the pipeline fits in **~12 GB**. (The T4 is pre-Ampere with no flash-attention, so it's slow and activation-heavy at high resolution; an Ampere 12 GB card such as an RTX 3060 fares much better.)
+
+Rule of thumb: `0` if you have ≥24 GB, `20` for ~16 GB, `30–40` for 12 GB. Higher N = lower VRAM, more CPU↔GPU traffic.
 
 ### GGUF / native-ComfyUI path (sub-16GB, t2v/t2i only for now)
 
