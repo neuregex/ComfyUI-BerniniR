@@ -79,21 +79,57 @@ class BerniniRLoadModelNative:
     CATEGORY = "BerniniR"
 
     def load(self, unet_name):
-        import comfy.sd
+        import torch
+        import comfy.model_detection
+        import comfy.model_management
+        import comfy.model_patcher
         import folder_paths
+
         path = folder_paths.get_full_path("diffusion_models", unet_name)
         if path is None:
             raise FileNotFoundError(
                 f"[BerniniR] no encuentro '{unet_name}' en models/diffusion_models")
-        print(f"[BerniniR] cargando (safe fp8, sin load_torch_file) '{unet_name}' ...", flush=True)
+        print(f"[BerniniR] cargando (safe fp8 + esqueleto META, 0-RAM) '{unet_name}' ...", flush=True)
+
+        # 1) Leer los pesos fp8 a mano (sin load_torch_file -> sin access violation).
         sd = safe_read_safetensors(path)
-        model = comfy.sd.load_diffusion_model_state_dict(sd, model_options={})
-        if model is None:
+
+        # 2) Detectar el modelo desde las claves.
+        model_config = comfy.model_detection.model_config_from_unet(sd, "")
+        if model_config is None:
             raise RuntimeError(
-                f"[BerniniR] ComfyUI no detectó un modelo de difusión en '{unet_name}'. "
-                f"¿Es un experto Wan convertido a formato nativo (convert_bernini_to_comfy.py)?")
-        print(f"[BerniniR] MODEL nativo listo: '{unet_name}' (gestión de memoria por ComfyUI)", flush=True)
-        return (model,)
+                f"[BerniniR] ComfyUI no detectó un modelo de difusión en '{unet_name}' "
+                f"(¿experto Wan convertido con convert_bernini_to_comfy.py?).")
+
+        # 3) Construir el esqueleto en META: 0 RAM y, clave en torch 2.8/Windows, NO se
+        #    ejecuta ningún torch.empty(dtype=fp8) real (que segfaultea). operations.Linear
+        #    respeta device -> con device=meta los pesos no se materializan aquí.
+        model = model_config.get_model(sd, "", device=torch.device("meta"))
+
+        # 4) Asignar nuestros pesos fp8 sobre el esqueleto (assign=True: reemplaza los
+        #    params meta por nuestros tensores, SIN copiar -> RAM baja). El WanModel nativo
+        #    no tiene buffers persistentes (RoPE se calcula al vuelo), así que todo lo que
+        #    necesita valor está en el checkpoint.
+        diff = model.diffusion_model
+        missing, unexpected = diff.load_state_dict(sd, strict=False, assign=True)
+
+        meta_left = [n for n, p in diff.named_parameters() if getattr(p, "is_meta", False)]
+        meta_left += [n for n, b in diff.named_buffers() if getattr(b, "is_meta", False)]
+        if meta_left:
+            raise RuntimeError(
+                f"[BerniniR] {len(meta_left)} tensores quedaron en META (no estaban en el "
+                f"checkpoint): {meta_left[:6]}. Avísame con esta lista y los materializo.")
+        if unexpected:
+            print(f"[BerniniR] aviso: {len(unexpected)} claves inesperadas (ej: {unexpected[:3]})", flush=True)
+
+        # 5) Envolver en ModelPatcher -> a partir de aquí lo gestiona ComfyUI (offload/lowvram).
+        model_patcher = comfy.model_patcher.ModelPatcher(
+            model,
+            load_device=comfy.model_management.get_torch_device(),
+            offload_device=comfy.model_management.unet_offload_device(),
+        )
+        print(f"[BerniniR] MODEL nativo listo (meta+assign, sin alloc fp8): '{unet_name}'", flush=True)
+        return (model_patcher,)
 
 
 NODE_CLASS_MAPPINGS = {
