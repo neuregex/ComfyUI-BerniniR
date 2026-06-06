@@ -88,10 +88,12 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
             toks.append(xe)
             frqs.append(fe)
 
-        # concatenar streams ANTES del target (como ref_conv); el eje de tokens de las freqs
-        # nativas (rope_embedder(...).movedim(1,2)) es el 2.
+        # concatenar streams ANTES del target (como ref_conv). Las freqs nativas tienen shape
+        # [1, seq, 1, head_dim//2, 2, 2] tras rope_embedder(...).movedim(1,2): el eje de TOKENS
+        # es el 1 (el 2 es el broadcast de cabezas, size 1). Hay que concatenar por el 1; si se
+        # hace por el 2 ese singleton pasa a 2 y apply_rope1 peta (2 vs num_heads).
         x_all = torch.cat(toks + [xt], dim=1)
-        freqs_all = torch.cat(frqs + [freqs], dim=2)
+        freqs_all = torch.cat(frqs + [freqs], dim=1)
 
         # time + context embeddings (réplica fiel del forward_orig nativo)
         e = m.time_embedding(sinusoidal_embedding_1d(m.freq_dim, t.flatten()).to(dtype=x_all[0].dtype))
