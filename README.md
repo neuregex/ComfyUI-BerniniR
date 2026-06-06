@@ -2,6 +2,8 @@
 
 [![Comfy Registry](https://img.shields.io/badge/Comfy_Registry-comfyui--berninir-1971c2)](https://registry.comfy.org/nodes/comfyui-berninir)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join_the_community-5865F2?logo=discord&logoColor=white)](https://discord.gg/HxfP9TnctJ)
+[![GGUF on HF](https://img.shields.io/badge/🤗_GGUF-neuregex%2FBernini--R--GGUF-ffce1c)](https://huggingface.co/neuregex/Bernini-R-GGUF)
 
 Support for **[ByteDance/Bernini-R](https://huggingface.co/ByteDance/Bernini-R)** in ComfyUI — text-to-video / text-to-image, image and video **editing**, and **reference-to-video**, with Bernini's own logic (source-id RoPE + multi-condition APG guidance) faithfully reimplemented.
 
@@ -117,17 +119,22 @@ With block-swap the experts stop being the bottleneck; the binding peak becomes 
 
 Rule of thumb: `0` if you have ≥24 GB, `20` for ~16 GB, `30–40` for 12 GB. Higher N = lower VRAM, more CPU↔GPU traffic.
 
-### GGUF / native-ComfyUI path (sub-16GB, t2v/t2i only for now)
+### GGUF / native-ComfyUI path (sub-16GB)
 
-Because `t2v`/`t2i` with `source_id=0` is **identical to standard Wan2.2**, you can run it with ComfyUI's native nodes (which already support fp8 and GGUF) after converting the weights to native keys:
+> **Pre-quantized GGUF — no conversion needed:** both experts (high & low noise) are hosted at **[neuregex/Bernini-R-GGUF](https://huggingface.co/neuregex/Bernini-R-GGUF)** in `Q4_K_M`, `Q5_K_M` and `Q8_0`. Drop them in `ComfyUI/models/unet/` and load with `UnetLoaderGGUF` (from [`city96/ComfyUI-GGUF`](https://github.com/city96/ComfyUI-GGUF)).
+
+- **t2v / t2i** — `source_id=0` is **identical to standard Wan2.2**, so the native GGUF path just works: one `UnetLoaderGGUF` → sampler.
+- **Editing (i2i / v2v), both experts** — a native **dual-expert** path is provided: load each GGUF with `UnetLoaderGGUF`, run each through **BerniniR · Apply Patches**, then feed both into **BerniniR · Guider** (`model` = high-noise, `model_low` = low-noise). The guider switches expert by timestep (t=875) and runs Bernini's APG guidance. GGUF has no fp8 tensors, so both experts coexist in 24 GB without the offload crash that fp8 hits. Ready-made graph: [`workflows/ui/bernini_i2i_gguf_dual.json`](workflows/ui/bernini_i2i_gguf_dual.json). *(New — feedback welcome on the [Discord](https://discord.gg/HxfP9TnctJ).)*
+
+Prefer to quantize yourself? Convert to native keys, then GGUF:
 
 ```bash
-python tools/convert_bernini_to_comfy.py --repo Bernini-R-Diffusers --out-dir comfy_out --dtype fp8_e4m3fn
-# -> comfy_out/bernini_r_high_noise_14B_fp8_e4m3fn.safetensors  (+ low_noise)
-# copy to ComfyUI/models/diffusion_models/ and load with two "Load Diffusion Model" nodes
+python tools/convert_bernini_to_comfy.py --repo Bernini-R-Diffusers --out-dir comfy_out --dtype bf16
+# then city96/ComfyUI-GGUF tools/convert.py + llama-quantize
+# (Wan needs the patched llama.cpp + a fix_5d_tensors.py pass for the 5D patch_embedding)
 ```
 
-For GGUF, pass the native `.safetensors` through [`city96/ComfyUI-GGUF`](https://github.com/city96/ComfyUI-GGUF) `tools/convert.py` (it only accepts the native format: that's why we convert first) and load them with `UnetLoaderGGUF`. The converter's key mapping is verified against 🤗 diffusers' official `convert_wan_to_diffusers.py` (20/20 cases in the unit test). *Editing/reference tasks require this package's backend (fp8+offload), not the GGUF path.*
+The converter's key mapping is verified against 🤗 diffusers' official `convert_wan_to_diffusers.py` (20/20 cases in the unit test).
 
 ---
 
@@ -148,6 +155,12 @@ This port is built against Bernini's **verbatim source** (github.com/bytedance/B
 **Not yet done:** a numerical comparison against ByteDance's official reference outputs (no public ground-truth tensors), so this is "faithful, stable, produces correct-looking results" rather than "bit-exact validated against the original."
 
 Design note worth knowing: diffusers 0.35.2 applies RoPE in **real cos/sin** form, but Bernini uses it **complex** (required for the source-id phase); that's why we replace each block's self-attention *processor* with a complex one (`bernini/model.py::_BerniniSelfAttnProcessor`), leaving cross-attn / FFN / modulation stock. Loading the experts in bf16 also keeps several modules in fp32, so the I/O dtype is taken from the `patch_embedding` weight rather than from `next(parameters())`.
+
+---
+
+## Community
+
+Join the Discord for updates, roadmaps, projects, or just to chat: **[discord.gg/HxfP9TnctJ](https://discord.gg/HxfP9TnctJ)**
 
 ---
 
