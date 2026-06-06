@@ -74,11 +74,14 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         Lt = xt.shape[1]
 
         # streams de condición (cada uno con su source_id -> su fase RoPE)
+        bsz = xt.shape[0]                              # batch del target (2 si hay CFG: cond+uncond)
         toks, frqs = [], []
         for st in streams:
             lat = st["latent"].to(x.device)            # el stream puede venir en CPU
             sid = int(st.get("source_id", 0))
-            xe = m.patch_embedding(lat.float()).to(x.dtype).flatten(2).transpose(1, 2)
+            xe = m.patch_embedding(lat.float()).to(x.dtype).flatten(2).transpose(1, 2)  # [1, Ls, dim]
+            if xe.shape[0] != bsz:                     # alinear batch con el target (CFG)
+                xe = xe.expand(bsz, -1, -1)
             fe = m.rope_encode(lat.shape[-3], lat.shape[-2], lat.shape[-1],
                                device=x.device, dtype=x.dtype, transformer_options=transformer_options)
             fe = compose_src_id_freqs(fe, sid, head_dim, theta)
