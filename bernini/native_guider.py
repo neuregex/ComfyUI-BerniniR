@@ -22,9 +22,9 @@ SUBCONJUNTO correcto en `transformer_options` antes de llamar al modelo:
   VI = vídeos+imágenes + target   (el target es el id 0, lo añade el forward).
 
 Switch dual-expert: si se pasa `model_low`, al cruzar el boundary (t < 875) se
-escala los omegas ×omega_scale una vez. El segundo experto se prepara/llama en
-M4 (con GGUF cabe junto al high; en fp8 choca con el límite de memoria — F09).
-Sin `model_low` -> single-expert, sin switch (el camino testeable hoy).
+carga el experto low-noise (lazy, vía load_models_gpu — con GGUF cabe junto al
+high y el load/offload no crashea) y se escala los omegas ×omega_scale una vez.
+Sin `model_low` -> single-expert, sin switch.
 """
 import torch
 
@@ -73,6 +73,7 @@ class BerniniGuider(comfy.samplers.CFGGuider):
         self.nt = [float(v) for v in nt]
         self.eta = float(self.bp["eta"])
         self.switched = False
+        self._inner_low = None   # inner model del experto low (lazy, al cruzar el boundary)
 
     def sample(self, *args, **kwargs):
         self._reset_runtime()
@@ -89,13 +90,42 @@ class BerniniGuider(comfy.samplers.CFGGuider):
             return "rv2v"         # vídeo + referencia -> CFG encadenada 4-fwd
         return "v2v"              # solo imagen (i2i) o solo vídeo -> CFG de texto con stream VI
 
-    # -- un forward del experto activo con un subconjunto de streams + un texto ---
-    def _x0(self, streams, cond, x, timestep, model_options):
+    # -- experto activo según el nivel de ruido (high-noise -> low-noise en el boundary) --
+    def _active_inner(self, x, timestep):
+        """high para t >= boundary; low para t < boundary (Wan2.2). El low se carga
+        perezosamente la primera vez que se cruza (con GGUF cabe junto al high y el
+        load/offload NO crashea, a diferencia de fp8 — ver F09)."""
+        if self.model_low is None:
+            return self.inner_model
+        try:
+            t_val = float(self.inner_model.model_sampling.timestep(timestep).reshape(-1)[0])
+        except Exception:
+            t_val = float("inf")
+        if t_val >= self.boundary_t:
+            return self.inner_model                       # régimen high-noise
+        if not self.switched:                             # primer paso en low-noise
+            sc = float(self.bp["omega_scale"])
+            self.oV *= sc; self.oI *= sc; self.oTI *= sc
+            self.switched = True
+        if self._inner_low is None:
+            try:
+                import comfy.model_management as mm
+                mm.load_models_gpu([self.model_low])
+                self._inner_low = self.model_low.model
+                print(f"[BerniniR] switch -> experto LOW-noise (t<{self.boundary_t:.0f}); "
+                      f"omegas ×{self.bp['omega_scale']}", flush=True)
+            except Exception as e:
+                print(f"[BerniniR] aviso: no pude cargar el experto low ({e}); sigo con high", flush=True)
+                self._inner_low = self.inner_model
+        return self._inner_low
+
+    # -- un forward del experto DADO con un subconjunto de streams + un texto ---
+    def _x0(self, model, streams, cond, x, timestep, model_options):
         mo = dict(model_options)
         to = dict(mo.get("transformer_options", {}))
         to["bernini_streams"] = streams          # [] -> el forward usa el camino nativo (solo target)
         mo["transformer_options"] = to
-        out = comfy.samplers.calc_cond_batch(self.inner_model, [cond], x, timestep, mo)
+        out = comfy.samplers.calc_cond_batch(model, [cond], x, timestep, mo)
         return out[0].float()
 
     # -- núcleo: predicción denoised (x0) combinada según el modo de Bernini ------
@@ -103,17 +133,8 @@ class BerniniGuider(comfy.samplers.CFGGuider):
         pos = self.conds.get("positive", None)
         neg = self.conds.get("negative", None)
 
-        # switch dual-expert (solo si hay low): escala los omegas UNA vez al cruzar el boundary.
-        if self.model_low is not None and not self.switched:
-            try:
-                t_val = float(self.inner_model.model_sampling.timestep(timestep).flatten()[0])
-            except Exception:
-                t_val = float("inf")
-            if t_val < self.boundary_t:
-                sc = float(self.bp["omega_scale"])
-                self.oV *= sc; self.oI *= sc; self.oTI *= sc
-                self.switched = True
-                # TODO(M4): cambiar self.inner_model al experto low ya preparado/cargado.
+        # experto activo según el ruido (escala los omegas ×omega_scale al cruzar a low-noise).
+        active = self._active_inner(x, timestep)
 
         oV, oI, oTI = self.oV, self.oI, self.oTI
         none_c = []
@@ -122,7 +143,7 @@ class BerniniGuider(comfy.samplers.CFGGuider):
         VI_c = list(self.streams_video) + list(self.streams_image)
 
         def f(streams, cond):
-            return self._x0(streams, cond, x, timestep, model_options)
+            return self._x0(active, streams, cond, x, timestep, model_options)
 
         mode = self._resolve_mode()
 

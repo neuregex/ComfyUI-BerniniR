@@ -1,0 +1,196 @@
+{
+  "last_node_id": 18,
+  "last_link_id": 21,
+  "nodes": [
+    {
+      "id": 1, "type": "UnetLoaderGGUF", "pos": [40, 40], "size": [380, 60],
+      "flags": {}, "order": 0, "mode": 0, "inputs": [],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [1], "slot_index": 0}],
+      "properties": {"Node name for S&R": "UnetLoaderGGUF"},
+      "widgets_values": ["bernini_r_high_noise_14B-Q5_K_M.gguf"]
+    },
+    {
+      "id": 2, "type": "UnetLoaderGGUF", "pos": [40, 130], "size": [380, 60],
+      "flags": {}, "order": 1, "mode": 0, "inputs": [],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [2], "slot_index": 0}],
+      "properties": {"Node name for S&R": "UnetLoaderGGUF"},
+      "widgets_values": ["bernini_r_low_noise_14B-Q5_K_M.gguf"]
+    },
+    {
+      "id": 3, "type": "CLIPLoader", "pos": [40, 220], "size": [380, 110],
+      "flags": {}, "order": 2, "mode": 0, "inputs": [],
+      "outputs": [{"name": "CLIP", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPLoader"},
+      "widgets_values": ["umt5_xxl_fp8_e4m3fn_scaled.safetensors", "wan", "default"]
+    },
+    {
+      "id": 4, "type": "VAELoader", "pos": [40, 360], "size": [380, 60],
+      "flags": {}, "order": 3, "mode": 0, "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [5, 6], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAELoader"},
+      "widgets_values": ["wan_2.1_vae.safetensors"]
+    },
+    {
+      "id": 5, "type": "LoadImage", "pos": [40, 460], "size": [380, 320],
+      "flags": {}, "order": 4, "mode": 0, "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [7], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": [], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["input.png", "image"]
+    },
+    {
+      "id": 6, "type": "VAEEncode", "pos": [460, 460], "size": [240, 50],
+      "flags": {}, "order": 8, "mode": 0,
+      "inputs": [
+        {"name": "pixels", "type": "IMAGE", "link": 7},
+        {"name": "vae", "type": "VAE", "link": 5}
+      ],
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [8, 9], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEEncode"},
+      "widgets_values": []
+    },
+    {
+      "id": 7, "type": "CLIPTextEncode", "pos": [460, 40], "size": [400, 110],
+      "flags": {}, "order": 5, "mode": 0,
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 3}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [14], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["make the sky a dramatic golden sunset, warm light"]
+    },
+    {
+      "id": 8, "type": "CLIPTextEncode", "pos": [460, 190], "size": [400, 100],
+      "flags": {}, "order": 6, "mode": 0,
+      "inputs": [{"name": "clip", "type": "CLIP", "link": 4}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [15], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["blurry, low quality, distorted, deformed"]
+    },
+    {
+      "id": 9, "type": "BerniniRApplyPatches", "pos": [460, 320], "size": [300, 60],
+      "flags": {}, "order": 7, "mode": 0,
+      "inputs": [{"name": "model", "type": "MODEL", "link": 1}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [10], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BerniniRApplyPatches"},
+      "widgets_values": []
+    },
+    {
+      "id": 10, "type": "BerniniRApplyPatches", "pos": [460, 390], "size": [300, 60],
+      "flags": {}, "order": 9, "mode": 0,
+      "inputs": [{"name": "model", "type": "MODEL", "link": 2}],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [13], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BerniniRApplyPatches"},
+      "widgets_values": []
+    },
+    {
+      "id": 11, "type": "BerniniRSourceStream", "pos": [800, 320], "size": [330, 100],
+      "flags": {}, "order": 10, "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 10},
+        {"name": "source_latent", "type": "LATENT", "link": 8}
+      ],
+      "outputs": [{"name": "model", "type": "MODEL", "links": [11, 12], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BerniniRSourceStream"},
+      "widgets_values": [1]
+    },
+    {
+      "id": 12, "type": "BerniniRGuider", "pos": [900, 40], "size": [330, 260],
+      "flags": {}, "order": 11, "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 11},
+        {"name": "positive", "type": "CONDITIONING", "link": 14},
+        {"name": "negative", "type": "CONDITIONING", "link": 15},
+        {"name": "model_low", "type": "MODEL", "link": 13}
+      ],
+      "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [16], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BerniniRGuider"},
+      "widgets_values": ["auto", 1.25, 4.5, 4.0, 0.5, 0.0, 50.0, 0.8, 0.875]
+    },
+    {
+      "id": 13, "type": "RandomNoise", "pos": [900, 340], "size": [300, 90],
+      "flags": {}, "order": 12, "mode": 0, "inputs": [],
+      "outputs": [{"name": "NOISE", "type": "NOISE", "links": [17], "slot_index": 0}],
+      "properties": {"Node name for S&R": "RandomNoise"},
+      "widgets_values": [0, "fixed"]
+    },
+    {
+      "id": 14, "type": "KSamplerSelect", "pos": [900, 460], "size": [300, 60],
+      "flags": {}, "order": 13, "mode": 0, "inputs": [],
+      "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [18], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSamplerSelect"},
+      "widgets_values": ["euler"]
+    },
+    {
+      "id": 15, "type": "BasicScheduler", "pos": [900, 550], "size": [300, 120],
+      "flags": {}, "order": 14, "mode": 0,
+      "inputs": [{"name": "model", "type": "MODEL", "link": 12}],
+      "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [19], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BasicScheduler"},
+      "widgets_values": ["simple", 20, 1.0]
+    },
+    {
+      "id": 16, "type": "SamplerCustomAdvanced", "pos": [1270, 40], "size": [320, 180],
+      "flags": {}, "order": 15, "mode": 0,
+      "inputs": [
+        {"name": "noise", "type": "NOISE", "link": 17},
+        {"name": "guider", "type": "GUIDER", "link": 16},
+        {"name": "sampler", "type": "SAMPLER", "link": 18},
+        {"name": "sigmas", "type": "SIGMAS", "link": 19},
+        {"name": "latent_image", "type": "LATENT", "link": 9}
+      ],
+      "outputs": [
+        {"name": "output", "type": "LATENT", "links": [20], "slot_index": 0},
+        {"name": "denoised_output", "type": "LATENT", "links": [], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "SamplerCustomAdvanced"},
+      "widgets_values": []
+    },
+    {
+      "id": 17, "type": "VAEDecode", "pos": [1270, 250], "size": [220, 50],
+      "flags": {}, "order": 16, "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 20},
+        {"name": "vae", "type": "VAE", "link": 6}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [21], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 18, "type": "SaveImage", "pos": [1270, 360], "size": [400, 380],
+      "flags": {}, "order": 17, "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 21}],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["BerniniR_i2i_gguf_dual"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 9, 0, "MODEL"],
+    [2, 2, 0, 10, 0, "MODEL"],
+    [3, 3, 0, 7, 0, "CLIP"],
+    [4, 3, 0, 8, 0, "CLIP"],
+    [5, 4, 0, 6, 1, "VAE"],
+    [6, 4, 0, 17, 1, "VAE"],
+    [7, 5, 0, 6, 0, "IMAGE"],
+    [8, 6, 0, 11, 1, "LATENT"],
+    [9, 6, 0, 16, 4, "LATENT"],
+    [10, 9, 0, 11, 0, "MODEL"],
+    [11, 11, 0, 12, 0, "MODEL"],
+    [12, 11, 0, 15, 0, "MODEL"],
+    [13, 10, 0, 12, 3, "MODEL"],
+    [14, 7, 0, 12, 1, "CONDITIONING"],
+    [15, 8, 0, 12, 2, "CONDITIONING"],
+    [16, 12, 0, 16, 1, "GUIDER"],
+    [17, 13, 0, 16, 0, "NOISE"],
+    [18, 14, 0, 16, 2, "SAMPLER"],
+    [19, 15, 0, 16, 3, "SIGMAS"],
+    [20, 16, 0, 17, 0, "LATENT"],
+    [21, 17, 0, 18, 0, "IMAGE"]
+  ],
+  "groups": [
+    {"title": "i2i GGUF DUAL-EXPERT (high+low, Q5) — adiós grano", "bounding": [20, -40, 1580, 840], "color": "#3f789e", "font_size": 18, "flags": {}}
+  ],
+  "config": {}, "extra": {}, "version": 0.4
+}
