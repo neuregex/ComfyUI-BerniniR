@@ -101,6 +101,23 @@ class BerniniRLoadModelNative:
                 f"[BerniniR] ComfyUI no detectó un modelo de difusión en '{unet_name}' "
                 f"(¿experto Wan convertido con convert_bernini_to_comfy.py?).")
 
+        # 2b) Fijar dtype de cómputo / manual-cast ANTES de construir. Si no, las ops NO
+        #     castean y el forward peta con "Input type (float) vs bias (BFloat16)" (lo que
+        #     vimos: 'manual cast: None'). El checkpoint es MIXTO (fp8 + bf16 + f32);
+        #     manual_cast=bf16 hace que cada op convierta su peso al vuelo: fp8->bf16 en los
+        #     Linear, y bf16->float32 en el patch_embedding (que el WanModel corre en .float()).
+        has_fp8 = any(getattr(t, "dtype", None) == torch.float8_e4m3fn for t in sd.values())
+        unet_dtype = torch.float8_e4m3fn if has_fp8 else torch.bfloat16
+        manual_cast_dtype = torch.bfloat16
+        try:
+            model_config.set_inference_dtype(unet_dtype, manual_cast_dtype)
+        except Exception as e:
+            print(f"[BerniniR] aviso: set_inference_dtype falló ({e}); fijo manual_cast directo", flush=True)
+            try:
+                model_config.manual_cast_dtype = manual_cast_dtype
+            except Exception:
+                pass
+
         # 3) Construir el esqueleto en META: 0 RAM y, clave en torch 2.8/Windows, NO se
         #    ejecuta ningún torch.empty(dtype=fp8) real (que segfaultea). operations.Linear
         #    respeta device -> con device=meta los pesos no se materializan aquí.
