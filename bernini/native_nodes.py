@@ -193,11 +193,42 @@ class BerniniRSourceStream:
         return (m,)
 
 
+class BerniniRApplyPatches:
+    """Aplica los patches de Bernini (src-id RoPE + stream-concat) a CUALQUIER MODEL Wan
+    nativo — en particular uno cargado con `UnetLoaderGGUF` de ComfyUI-GGUF (camino GGUF
+    para el dual-expert). NO hace falta con `BerniniRLoadModelNative` (que ya los aplica).
+    Clona el modelo y reinstala el object_patch del forward_orig; sin streams en
+    transformer_options se comporta como Wan nativo (no-op para t2v)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL", {"tooltip": "MODEL Wan (p.ej. UnetLoaderGGUF de ComfyUI-GGUF)."}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "apply"
+    CATEGORY = "BerniniR"
+
+    def apply(self, model):
+        m = model.clone()
+        try:
+            from .native_patches import apply_bernini_patches
+            apply_bernini_patches(m)
+            print("[BerniniR] patches Bernini aplicados a MODEL externo (GGUF/UNETLoader)", flush=True)
+        except Exception as e:
+            print(f"[BerniniR] aviso: no se pudieron aplicar los patches ({e}); corre como Wan nativo", flush=True)
+        return (m,)
+
+
 NODE_CLASS_MAPPINGS = {
     "BerniniRLoadModelNative": BerniniRLoadModelNative,
     "BerniniRSourceStream": BerniniRSourceStream,
+    "BerniniRApplyPatches": BerniniRApplyPatches,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BerniniRLoadModelNative": "BerniniR · Load Model (native, safe fp8)",
     "BerniniRSourceStream": "BerniniR · Source Stream (edición)",
+    "BerniniRApplyPatches": "BerniniR · Apply Patches (para GGUF/UNETLoader)",
 }
