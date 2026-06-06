@@ -146,6 +146,15 @@ class BerniniRLoadModelNative:
             offload_device=comfy.model_management.unet_offload_device(),
         )
         print(f"[BerniniR] MODEL nativo listo (meta+assign, sin alloc fp8): '{unet_name}'", flush=True)
+        # M2: instala los patches de Bernini (src-id RoPE + stream-concat). No-op para t2v
+        # (sin streams en transformer_options); con el guider de M3 alimentando streams,
+        # habilita la edición. Tolerante a fallos: si algo va mal, corre como Wan nativo.
+        try:
+            from .native_patches import apply_bernini_patches
+            apply_bernini_patches(model_patcher)
+            print("[BerniniR] patches Bernini instalados (src-id RoPE + stream-concat)", flush=True)
+        except Exception as e:
+            print(f"[BerniniR] aviso: patches Bernini NO instalados ({e}); corre como Wan nativo", flush=True)
         return (model_patcher,)
 
 
