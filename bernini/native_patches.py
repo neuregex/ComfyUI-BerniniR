@@ -76,7 +76,7 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         # streams de condición (cada uno con su source_id -> su fase RoPE)
         toks, frqs = [], []
         for st in streams:
-            lat = st["latent"]
+            lat = st["latent"].to(x.device)            # el stream puede venir en CPU
             sid = int(st.get("source_id", 0))
             xe = m.patch_embedding(lat.float()).to(x.dtype).flatten(2).transpose(1, 2)
             fe = m.rope_encode(lat.shape[-3], lat.shape[-2], lat.shape[-1],

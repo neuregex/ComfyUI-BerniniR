@@ -158,9 +158,46 @@ class BerniniRLoadModelNative:
         return (model_patcher,)
 
 
+class BerniniRSourceStream:
+    """M3 — Inyecta un stream de condición (latente fuente/referencia) para que el
+    forward_orig parcheado lo concatene con su source-id (edición: i2i/v2v/rv2v).
+    Encadena varios nodos para multi-stream (cada uno un source_id distinto, >=1; el
+    target generado es el id 0). El latente debe venir del VAE de Wan (VAE Encode con el
+    Wan VAE)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL", {"tooltip": "MODEL de BerniniR Load Model (native)."}),
+            "source_latent": ("LATENT", {"tooltip": "Latente fuente/ref (VAE Encode con el Wan VAE)."}),
+            "source_id": ("INT", {"default": 1, "min": 1, "max": 64,
+                          "tooltip": "ID del stream (>=1). Cada fuente/ref un id distinto; el target es 0."}),
+        }}
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "apply"
+    CATEGORY = "BerniniR"
+
+    def apply(self, model, source_latent, source_id):
+        m = model.clone()
+        # Copias defensivas: no mutar los dicts compartidos del modelo original.
+        mo = dict(getattr(m, "model_options", {}) or {})
+        to = dict(mo.get("transformer_options", {}))
+        streams = list(to.get("bernini_streams", []))
+        streams.append({"latent": source_latent["samples"], "source_id": int(source_id)})
+        to["bernini_streams"] = streams
+        mo["transformer_options"] = to
+        m.model_options = mo
+        print(f"[BerniniR] stream fuente añadido (source_id={int(source_id)}); total={len(streams)}", flush=True)
+        return (m,)
+
+
 NODE_CLASS_MAPPINGS = {
     "BerniniRLoadModelNative": BerniniRLoadModelNative,
+    "BerniniRSourceStream": BerniniRSourceStream,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "BerniniRLoadModelNative": "BerniniR · Load Model (native, safe fp8)",
+    "BerniniRSourceStream": "BerniniR · Source Stream (edición)",
 }
