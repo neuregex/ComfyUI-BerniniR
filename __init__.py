@@ -22,6 +22,16 @@ if __package__:
         NODE_DISPLAY_NAME_MAPPINGS.update(_NDN_NATIVE)
     except Exception as _e:  # pragma: no cover
         print(f"[BerniniR] aviso: nodos nativos (v0.4) no cargados: {_e}")
+    # M3b: guider de Bernini (APG + CFG encadenada) para SamplerCustomAdvanced.
+    try:
+        from .bernini.native_guider import (
+            NODE_CLASS_MAPPINGS as _NCM_GUIDER,
+            NODE_DISPLAY_NAME_MAPPINGS as _NDN_GUIDER,
+        )
+        NODE_CLASS_MAPPINGS.update(_NCM_GUIDER)
+        NODE_DISPLAY_NAME_MAPPINGS.update(_NDN_GUIDER)
+    except Exception as _e:  # pragma: no cover
+        print(f"[BerniniR] aviso: guider nativo (M3b) no cargado: {_e}")
 else:  # pragma: no cover - solo en import standalone (tests/herramientas)
     NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 
