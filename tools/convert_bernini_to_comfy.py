@@ -137,15 +137,66 @@ _FP8_SKIP = (
 )
 
 
+# safetensors dtype string -> torch dtype (para el lector mmap manual).
+_ST2TORCH = {
+    "F64": "float64", "F32": "float32", "F16": "float16", "BF16": "bfloat16",
+    "F8_E4M3": "float8_e4m3fn", "F8_E5M2": "float8_e5m2",
+    "I64": "int64", "I32": "int32", "I16": "int16", "I8": "int8",
+    "U8": "uint8", "BOOL": "bool",
+}
+
+
+def _safe_read(path: str) -> dict:
+    """Lee un .safetensors a mano (mmap + copia por tensor + uint8->view(dtype)) en vez
+    de safetensors.torch.load_file, que SEGFAULTEA ('access violation') materializando
+    tensores F8_E4M3 en torch 2.8 / Windows (el bug de la carga fp8).
+
+    Importante: usamos `mm[a:b]` (que devuelve una COPIA en bytes, no una vista del mmap)
+    para que no queden 'exported pointers' y el mmap se pueda cerrar. Cada tensor queda
+    respaldado por su propio bytearray (escribible -> casteable y guardable), independiente
+    del mmap."""
+    import json
+    import mmap as _mmap
+    import struct
+    import warnings
+    out = {}
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(n))
+        base = 8 + n
+        mm = _mmap.mmap(f.fileno(), 0, access=_mmap.ACCESS_READ)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                for name, meta in header.items():
+                    if name == "__metadata__":
+                        continue
+                    dtn = _ST2TORCH.get(meta["dtype"])
+                    if dtn is None:
+                        sys.exit(f"[error] dtype safetensors no soportado: {meta['dtype']}")
+                    dt = getattr(torch, dtn)
+                    s, e = meta["data_offsets"]
+                    shape = meta["shape"]
+                    if e > s:
+                        raw = bytearray(mm[base + s: base + e])      # COPIA (no vista) -> mm cerrable
+                        t = torch.frombuffer(raw, dtype=torch.uint8).view(dt)
+                        out[name] = t.reshape(shape) if shape else t.reshape(())
+                    else:
+                        out[name] = torch.empty(shape, dtype=dt)
+        finally:
+            mm.close()
+    return out
+
+
 def _load_diffusers_dir(path: str) -> dict:
-    """Carga y fusiona todos los *.safetensors de una carpeta diffusers."""
+    """Carga y fusiona todos los *.safetensors de una carpeta diffusers (lector mmap
+    seguro para fp8)."""
     shards = sorted(glob.glob(os.path.join(path, "*.safetensors")))
     if not shards:
         sys.exit(f"[error] no se encontraron *.safetensors en {path}")
     sd = {}
     for shard in shards:
-        part = load_file(shard)
-        sd.update(part)
+        sd.update(_safe_read(shard))
     return sd
 
 

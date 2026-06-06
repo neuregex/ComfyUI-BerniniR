@@ -10,6 +10,18 @@
 # (que sí ocurren cuando `__package__` está definido y el import se ejecuta).
 if __package__:
     from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+    # Backend nativo (v0.4): añade los loaders que esquivan el crash de load_torch_file
+    # con fp8 e4m3 en torch 2.8/Windows. Tolerante a fallos: si algo va mal, el paquete
+    # sigue funcionando con los nodos diffusers.
+    try:
+        from .bernini.native_nodes import (
+            NODE_CLASS_MAPPINGS as _NCM_NATIVE,
+            NODE_DISPLAY_NAME_MAPPINGS as _NDN_NATIVE,
+        )
+        NODE_CLASS_MAPPINGS.update(_NCM_NATIVE)
+        NODE_DISPLAY_NAME_MAPPINGS.update(_NDN_NATIVE)
+    except Exception as _e:  # pragma: no cover
+        print(f"[BerniniR] aviso: nodos nativos (v0.4) no cargados: {_e}")
 else:  # pragma: no cover - solo en import standalone (tests/herramientas)
     NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = {}, {}
 
