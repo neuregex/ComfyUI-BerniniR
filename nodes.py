@@ -443,8 +443,21 @@ class BerniniRLoadVideo:
     Para mp4/avi usa VHS_LoadVideo u otro loader y conéctalo igual a source_video."""
     @classmethod
     def INPUT_TYPES(cls):
+        # Desplegable con los webp/gif animados de ComfyUI/input + botón de subida
+        # (image_upload), igual que LoadImage — sin teclear el nombre a mano.
+        files = ["source.webp"]
+        try:
+            import folder_paths
+            d = folder_paths.get_input_directory()
+            found = sorted(f for f in os.listdir(d)
+                           if os.path.isfile(os.path.join(d, f)) and f.lower().endswith((".webp", ".gif")))
+            if found:
+                files = found
+        except Exception:
+            pass
         return {"required": {
-            "video": ("STRING", {"default": "source.webp", "tooltip": "Archivo en ComfyUI/input (webp o gif animado)"}),
+            "video": (files, {"image_upload": True,
+                      "tooltip": "Archivo animado (webp/gif) en ComfyUI/input — elígelo o súbelo con el botón."}),
             "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 1024, "tooltip": "Máximo de frames (0 = todos)"}),
         }}
 
