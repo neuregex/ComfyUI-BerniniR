@@ -181,11 +181,21 @@ class BerniniRSourceStream:
 
     def apply(self, model, source_latent, source_id):
         m = model.clone()
-        # Copias defensivas: no mutar los dicts compartidos del modelo original.
+        # Normaliza el latente fuente al MISMO espacio que el target. ComfyUI aplica
+        # process_latent_in (mean/std del VAE de Wan) al latent_image antes de muestrear,
+        # así que el modelo ve el target normalizado; el pipeline de Bernini hace lo mismo
+        # con el stream (`(latents-mean)/std` en _vae_encode). Si NO normalizamos el stream,
+        # el patch_embedding lo ve mal escalado (std hasta ~2.8× en Wan) -> el target apenas
+        # sigue la fuente (se nota sobre todo en vídeo). Por eso normalizamos aquí.
+        samples = source_latent["samples"]
+        try:
+            samples = m.model.process_latent_in(samples)
+        except Exception as e:
+            print(f"[BerniniR] aviso: no pude normalizar el stream ({e}); uso el latente crudo", flush=True)
         mo = dict(getattr(m, "model_options", {}) or {})
         to = dict(mo.get("transformer_options", {}))
         streams = list(to.get("bernini_streams", []))
-        streams.append({"latent": source_latent["samples"], "source_id": int(source_id)})
+        streams.append({"latent": samples, "source_id": int(source_id)})
         to["bernini_streams"] = streams
         mo["transformer_options"] = to
         m.model_options = mo
