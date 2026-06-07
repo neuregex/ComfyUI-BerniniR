@@ -111,7 +111,14 @@ class BerniniGuider(comfy.samplers.CFGGuider):
             try:
                 import comfy.model_management as mm
                 mm.load_models_gpu([self.model_low])
+                # calc_cond_batch hace `model.current_patcher.prepare_state(...)`; ese enlace
+                # BaseModel->ModelPatcher lo fija pre_run() (load_models_gpu NO lo pone). Sin
+                # esto: AttributeError('NoneType' ... prepare_state).
+                if hasattr(self.model_low, "pre_run"):
+                    self.model_low.pre_run()
                 self._inner_low = self.model_low.model
+                if getattr(self._inner_low, "current_patcher", None) is None:
+                    self._inner_low.current_patcher = self.model_low
                 print(f"[BerniniR] switch -> experto LOW-noise (t<{self.boundary_t:.0f}); "
                       f"omegas ×{self.bp['omega_scale']}", flush=True)
             except Exception as e:
