@@ -77,7 +77,21 @@ class BerniniGuider(comfy.samplers.CFGGuider):
 
     def sample(self, *args, **kwargs):
         self._reset_runtime()
-        return super().sample(*args, **kwargs)
+        try:
+            return super().sample(*args, **kwargs)
+        finally:
+            # Auto-cleanup: el experto low lo cargamos a mano (load_models_gpu) y ComfyUI no lo
+            # libera por su cuenta -> se acumulan GGUF entre runs/workflows y la VRAM hace
+            # thrashing al encadenar (p.ej. v2v -> i2i). Liberamos su clon aquí. El high lo
+            # gestiona el cleanup normal del CFGGuider.
+            if self.model_low is not None and self._inner_low is not None:
+                try:
+                    import comfy.model_management as mm
+                    mm.unload_model_clones(self.model_low)
+                    mm.soft_empty_cache()
+                except Exception:
+                    pass
+            self._inner_low = None
 
     # -- resolución de modo -------------------------------------------------------
     def _resolve_mode(self) -> str:
