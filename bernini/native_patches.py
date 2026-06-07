@@ -66,12 +66,18 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         from comfy.ldm.wan.model import sinusoidal_embedding_1d
         m = diff
 
-        # target
-        xt = m.patch_embedding(x.float()).to(x.dtype)
-        grid_sizes = xt.shape[2:]
+        # target: parchea y saca SU grid REAL de parches (Tg, Hg, Wg).
+        xt_conv = m.patch_embedding(x.float()).to(x.dtype)
+        grid_sizes = xt_conv.shape[2:]
         transformer_options["grid_sizes"] = grid_sizes
-        xt = xt.flatten(2).transpose(1, 2)                    # [B, Lt, dim]
+        xt = xt_conv.flatten(2).transpose(1, 2)               # [B, Lt, dim]
         Lt = xt.shape[1]
+        # Freqs del target desde SU grid de parches, NO desde las dims del latente: con vídeo
+        # (alguna dim impar) rope_encode(dims) y patch_embedding discrepan ((h+1)//2 vs
+        # (h-2)//2+1). rope_encode(Tg, 2*Hg, 2*Wg) -> grid (Tg,Hg,Wg) == el de patch_embedding,
+        # y para dims pares es IDÉNTICO a las freqs nativas (i2i/t2v intactos).
+        freqs_t = m.rope_encode(grid_sizes[0], 2 * grid_sizes[1], 2 * grid_sizes[2],
+                                device=x.device, dtype=x.dtype, transformer_options=transformer_options)
 
         # streams de condición (cada uno con su source_id -> su fase RoPE)
         bsz = xt.shape[0]                              # batch del target (2 si hay CFG: cond+uncond)
@@ -79,21 +85,29 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         for st in streams:
             lat = st["latent"].to(x.device)            # el stream puede venir en CPU
             sid = int(st.get("source_id", 0))
-            xe = m.patch_embedding(lat.float()).to(x.dtype).flatten(2).transpose(1, 2)  # [1, Ls, dim]
+            xe_conv = m.patch_embedding(lat.float()).to(x.dtype)   # [B, dim, Ts, Hs, Ws]
+            gs = xe_conv.shape[2:]
+            xe = xe_conv.flatten(2).transpose(1, 2)                # [B, Ls, dim]
             if xe.shape[0] != bsz:                     # alinear batch con el target (CFG)
                 xe = xe.expand(bsz, -1, -1)
-            fe = m.rope_encode(lat.shape[-3], lat.shape[-2], lat.shape[-1],
+            fe = m.rope_encode(gs[0], 2 * gs[1], 2 * gs[2],        # freqs desde el grid REAL de xe
                                device=x.device, dtype=x.dtype, transformer_options=transformer_options)
             fe = compose_src_id_freqs(fe, sid, head_dim, theta)
             toks.append(xe)
             frqs.append(fe)
+
+        if not getattr(forward_orig_bernini, "_dbg", False):
+            forward_orig_bernini._dbg = True
+            print(f"[BerniniR] dbg: x={tuple(x.shape)} grid_t={tuple(grid_sizes)} Lt={Lt} "
+                  f"Ls={[t.shape[1] for t in toks]} freqs_t_seq={freqs_t.shape[1]} "
+                  f"fe_seq={[f.shape[1] for f in frqs]}", flush=True)
 
         # concatenar streams ANTES del target (como ref_conv). Las freqs nativas tienen shape
         # [1, seq, 1, head_dim//2, 2, 2] tras rope_embedder(...).movedim(1,2): el eje de TOKENS
         # es el 1 (el 2 es el broadcast de cabezas, size 1). Hay que concatenar por el 1; si se
         # hace por el 2 ese singleton pasa a 2 y apply_rope1 peta (2 vs num_heads).
         x_all = torch.cat(toks + [xt], dim=1)
-        freqs_all = torch.cat(frqs + [freqs], dim=1)
+        freqs_all = torch.cat(frqs + [freqs_t], dim=1)
 
         # time + context embeddings (réplica fiel del forward_orig nativo)
         e = m.time_embedding(sinusoidal_embedding_1d(m.freq_dim, t.flatten()).to(dtype=x_all[0].dtype))
