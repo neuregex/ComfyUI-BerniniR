@@ -1,6 +1,6 @@
 {
-  "last_node_id": 18,
-  "last_link_id": 21,
+  "last_node_id": 19,
+  "last_link_id": 22,
   "nodes": [
     {
       "id": 1, "type": "UnetLoaderGGUF", "pos": [40, 40], "size": [380, 60],
@@ -35,13 +35,21 @@
       "flags": {}, "order": 4, "mode": 0, "inputs": [],
       "outputs": [{"name": "frames", "type": "IMAGE", "links": [7], "slot_index": 0}],
       "properties": {"Node name for S&R": "BerniniRLoadVideo"},
-      "widgets_values": ["source.webp", 33]
+      "widgets_values": ["source.webp", 13]
     },
     {
-      "id": 6, "type": "VAEEncode", "pos": [460, 460], "size": [240, 50],
+      "id": 19, "type": "ImageScale", "pos": [440, 600], "size": [240, 130],
+      "flags": {}, "order": 5, "mode": 0,
+      "inputs": [{"name": "image", "type": "IMAGE", "link": 7}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [22], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ImageScale"},
+      "widgets_values": ["lanczos", 768, 576, "disabled"]
+    },
+    {
+      "id": 6, "type": "VAEEncode", "pos": [720, 600], "size": [240, 50],
       "flags": {}, "order": 8, "mode": 0,
       "inputs": [
-        {"name": "pixels", "type": "IMAGE", "link": 7},
+        {"name": "pixels", "type": "IMAGE", "link": 22},
         {"name": "vae", "type": "VAE", "link": 5}
       ],
       "outputs": [{"name": "LATENT", "type": "LATENT", "links": [8, 9], "slot_index": 0}],
@@ -102,7 +110,7 @@
       ],
       "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [16], "slot_index": 0}],
       "properties": {"Node name for S&R": "BerniniRGuider"},
-      "widgets_values": ["auto", 1.25, 4.5, 4.0, 0.5, 0.0, 50.0, 0.8, 0.875]
+      "widgets_values": ["v2v_apg", 1.25, 4.5, 4.0, 0.5, 0.0, 50.0, 0.8, 0.875]
     },
     {
       "id": 13, "type": "RandomNoise", "pos": [900, 340], "size": [300, 90],
@@ -170,7 +178,8 @@
     [4, 3, 0, 8, 0, "CLIP"],
     [5, 4, 0, 6, 1, "VAE"],
     [6, 4, 0, 17, 1, "VAE"],
-    [7, 5, 0, 6, 0, "IMAGE"],
+    [7, 5, 0, 19, 0, "IMAGE"],
+    [22, 19, 0, 6, 0, "IMAGE"],
     [8, 6, 0, 11, 1, "LATENT"],
     [9, 6, 0, 16, 4, "LATENT"],
     [10, 9, 0, 11, 0, "MODEL"],
