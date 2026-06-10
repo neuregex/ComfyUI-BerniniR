@@ -67,7 +67,12 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         m = diff
 
         # target: parchea y saca SU grid REAL de parches (Tg, Hg, Wg).
-        xt_conv = m.patch_embedding(x.float()).to(x.dtype)
+        # dtype de la conv: con pesos float NORMALES (ops normales, p.ej. el 1.3B bf16) el input
+        # DEBE igualar ese dtype; con pesos fp8/GGUF (manual-cast) la op castea el peso al dtype
+        # del input, así que basta el de cómputo (x.dtype). NO forzar float32 (rompía el bf16 puro).
+        _w = getattr(m.patch_embedding, "weight", None)
+        emb_dtype = _w.dtype if (_w is not None and _w.dtype in (torch.float16, torch.bfloat16, torch.float32)) else x.dtype
+        xt_conv = m.patch_embedding(x.to(emb_dtype)).to(x.dtype)
         grid_sizes = xt_conv.shape[2:]
         transformer_options["grid_sizes"] = grid_sizes
         xt = xt_conv.flatten(2).transpose(1, 2)               # [B, Lt, dim]
@@ -85,7 +90,7 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
         for st in streams:
             lat = st["latent"].to(x.device)            # el stream puede venir en CPU
             sid = int(st.get("source_id", 0))
-            xe_conv = m.patch_embedding(lat.float()).to(x.dtype)   # [B, dim, Ts, Hs, Ws]
+            xe_conv = m.patch_embedding(lat.to(emb_dtype)).to(x.dtype)   # [B, dim, Ts, Hs, Ws]
             gs = xe_conv.shape[2:]
             xe = xe_conv.flatten(2).transpose(1, 2)                # [B, Ls, dim]
             if xe.shape[0] != bsz:                     # alinear batch con el target (CFG)
