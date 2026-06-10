@@ -36,7 +36,20 @@ pip install -r ComfyUI-BerniniR/requirements.txt
 # (torch is provided by ComfyUI; don't reinstall it)
 ```
 
-## Weights
+## Models — download what fits your VRAM
+
+Two ready-to-use repos, each bundling everything ComfyUI needs (renderer + VAE + UMT5):
+
+| Your VRAM | Use this | Repo |
+|---|---|---|
+| **24 GB** | **14B dual-expert** — full quality, `Q4`–`Q8` GGUF | **[neuregex/Bernini-R-GGUF](https://huggingface.co/neuregex/Bernini-R-GGUF)** |
+| **4–12 GB** | **1.3B** single-expert — tiny & fast, `bf16` + `Q4`–`Q8` GGUF, self-contained | **[neuregex/Bernini-1.3B-ComfyUI](https://huggingface.co/neuregex/Bernini-1.3B-ComfyUI)** |
+
+Install [`city96/ComfyUI-GGUF`](https://github.com/city96/ComfyUI-GGUF) for the `.gguf` files. Ready-made graphs in [`workflows/ui/`](workflows/ui/): `bernini_i2i_gguf_dual` / `bernini_v2v_gguf_dual` / `bernini_rv2v_gguf_dual` (14B), `bernini_i2i_1.3B` (1.3B).
+
+> **Wiring:** `UnetLoaderGGUF` → **BerniniR · Apply Patches** → **BerniniR · Source Stream** → **BerniniR · Guider**. For the **14B**, load both experts and set `model` = high-noise, `model_low` = low-noise; the **1.3B** is single-expert, so leave `model_low` empty. GGUF carries no fp8 tensors, so both 14B experts coexist in 24 GB with no offload crash.
+
+## Weights (alternative: diffusers backend, auto-download)
 
 The **BerniniR · Load Model** node can fetch the weights for you — no manual download. It exposes:
 
@@ -124,7 +137,8 @@ Rule of thumb: `0` if you have ≥24 GB, `20` for ~16 GB, `30–40` for 12 GB. H
 > **Pre-quantized GGUF — no conversion needed:** both experts (high & low noise) are hosted at **[neuregex/Bernini-R-GGUF](https://huggingface.co/neuregex/Bernini-R-GGUF)** in `Q4_K_M`, `Q5_K_M` and `Q8_0`. Drop them in `ComfyUI/models/unet/` and load with `UnetLoaderGGUF` (from [`city96/ComfyUI-GGUF`](https://github.com/city96/ComfyUI-GGUF)).
 
 - **t2v / t2i** — `source_id=0` is **identical to standard Wan2.2**, so the native GGUF path just works: one `UnetLoaderGGUF` → sampler.
-- **Editing (i2i / v2v), both experts** — a native **dual-expert** path is provided: load each GGUF with `UnetLoaderGGUF`, run each through **BerniniR · Apply Patches**, then feed both into **BerniniR · Guider** (`model` = high-noise, `model_low` = low-noise). The guider switches expert by timestep (t=875) and runs Bernini's APG guidance. GGUF has no fp8 tensors, so both experts coexist in 24 GB without the offload crash that fp8 hits. Ready-made graph: [`workflows/ui/bernini_i2i_gguf_dual.json`](workflows/ui/bernini_i2i_gguf_dual.json). *(New — feedback welcome on the [Discord](https://discord.gg/HxfP9TnctJ).)*
+- **Editing — i2i / v2v / rv2v, dual-expert** — load each GGUF with `UnetLoaderGGUF` → **BerniniR · Apply Patches** → **BerniniR · Source Stream** → **BerniniR · Guider** (`model` = high-noise, `model_low` = low-noise). The guider switches expert by timestep (t=875) and runs Bernini's APG guidance. GGUF has no fp8 tensors, so both experts coexist in 24 GB with no offload crash. Graphs: [`bernini_i2i_gguf_dual`](workflows/ui/bernini_i2i_gguf_dual.json) · [`bernini_v2v_gguf_dual`](workflows/ui/bernini_v2v_gguf_dual.json) · [`bernini_rv2v_gguf_dual`](workflows/ui/bernini_rv2v_gguf_dual.json).
+- **Even less VRAM → the 1.3B** — the single-expert [neuregex/Bernini-1.3B-ComfyUI](https://huggingface.co/neuregex/Bernini-1.3B-ComfyUI) bundle (fine-tuned from Wan2.1-1.3B, ~2.6 GB) runs on 4–12 GB cards. Same nodes, leave `model_low` empty; graph [`bernini_i2i_1.3B`](workflows/ui/bernini_i2i_1.3B.json).
 
 Prefer to quantize yourself? Convert to native keys, then GGUF:
 
