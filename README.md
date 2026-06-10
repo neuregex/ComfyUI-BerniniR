@@ -47,6 +47,8 @@ Two ready-to-use repos, each bundling everything ComfyUI needs (renderer + VAE +
 
 Install [`city96/ComfyUI-GGUF`](https://github.com/city96/ComfyUI-GGUF) for the `.gguf` files. Ready-made graphs in [`workflows/ui/`](workflows/ui/): `bernini_i2i_gguf_dual` / `bernini_v2v_gguf_dual` / `bernini_rv2v_gguf_dual` (14B), `bernini_i2i_1.3B` (1.3B).
 
+> **Text encoder (all graphs):** download `umt5-xxl-encoder-Q5_K_M.gguf` from [`city96/umt5-xxl-encoder-gguf`](https://huggingface.co/city96/umt5-xxl-encoder-gguf) into `ComfyUI/models/text_encoders/`. Every graph loads it via `CLIPLoaderGGUF` (`type = wan`) instead of the fp8 `.safetensors` encoder — the fp8 one triggers a Windows / torch-2.8 access violation when materializing fp8 storage under memory pressure. `ComfyUI-GGUF` is therefore required for the 1.3B graphs too.
+
 > **Wiring:** `UnetLoaderGGUF` → **BerniniR · Apply Patches** → **BerniniR · Source Stream** → **BerniniR · Guider**. For the **14B**, load both experts and set `model` = high-noise, `model_low` = low-noise; the **1.3B** is single-expert, so leave `model_low` empty. GGUF carries no fp8 tensors, so both 14B experts coexist in 24 GB with no offload crash.
 
 ## Weights (alternative: diffusers backend, auto-download)

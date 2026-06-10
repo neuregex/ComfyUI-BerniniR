@@ -1,6 +1,6 @@
 {
-  "last_node_id": 22,
-  "last_link_id": 26,
+  "last_node_id": 23,
+  "last_link_id": 27,
   "nodes": [
     {
       "id": 1, "type": "UnetLoaderGGUF", "pos": [40, 40], "size": [360, 60],
@@ -17,11 +17,11 @@
       "widgets_values": ["bernini_r_low_noise_14B-Q4_K_M.gguf"]
     },
     {
-      "id": 3, "type": "CLIPLoader", "pos": [40, 200], "size": [360, 110],
+      "id": 3, "type": "CLIPLoaderGGUF", "pos": [40, 200], "size": [360, 110],
       "flags": {}, "order": 2, "mode": 0, "inputs": [],
       "outputs": [{"name": "CLIP", "type": "CLIP", "links": [15, 16], "slot_index": 0}],
       "properties": {"Node name for S&R": "CLIPLoader"},
-      "widgets_values": ["umt5_xxl_fp8_e4m3fn_scaled.safetensors", "wan", "default"]
+      "widgets_values": ["umt5-xxl-encoder-Q5_K_M.gguf", "wan", "default"]
     },
     {
       "id": 4, "type": "VAELoader", "pos": [40, 340], "size": [360, 60],
@@ -70,7 +70,7 @@
       "id": 14, "type": "VAEEncode", "pos": [440, 600], "size": [220, 50],
       "flags": {}, "order": 9, "mode": 0,
       "inputs": [
-        {"name": "pixels", "type": "IMAGE", "link": 10},
+        {"name": "pixels", "type": "IMAGE", "link": 27},
         {"name": "vae", "type": "VAE", "link": 11}
       ],
       "outputs": [{"name": "LATENT", "type": "LATENT", "links": [12], "slot_index": 0}],
@@ -201,6 +201,14 @@
       "outputs": [],
       "properties": {"Node name for S&R": "SaveAnimatedWEBP"},
       "widgets_values": ["BerniniR_rv2v_gguf", 16, false, 90, "default"]
+    },
+    {
+      "id": 23, "type": "ImageScale", "pos": [700, 620], "size": [240, 130],
+      "flags": {}, "order": 6, "mode": 0,
+      "inputs": [{"name": "image", "type": "IMAGE", "link": 10}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [27], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ImageScale"},
+      "widgets_values": ["lanczos", 768, 768, "disabled"]
     }
   ],
   "links": [
@@ -213,7 +221,8 @@
     [7, 2, 0, 11, 0, "MODEL"],
     [8, 10, 0, 12, 0, "MODEL"],
     [9, 12, 0, 15, 0, "MODEL"],
-    [10, 13, 0, 14, 0, "IMAGE"],
+    [10, 13, 0, 23, 0, "IMAGE"],
+    [27, 23, 0, 14, 0, "IMAGE"],
     [11, 4, 0, 14, 1, "VAE"],
     [12, 14, 0, 15, 1, "LATENT"],
     [13, 15, 0, 16, 0, "MODEL"],

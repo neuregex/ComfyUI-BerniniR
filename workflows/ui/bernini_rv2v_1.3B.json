@@ -1,6 +1,6 @@
 {
-  "last_node_id": 19,
-  "last_link_id": 23,
+  "last_node_id": 20,
+  "last_link_id": 24,
   "nodes": [
     {
       "id": 1, "type": "BerniniRLoadModelNative", "pos": [40, 40], "size": [360, 60],
@@ -10,11 +10,11 @@
       "widgets_values": ["bernini_r_1.3B_bf16.safetensors"]
     },
     {
-      "id": 2, "type": "CLIPLoader", "pos": [40, 150], "size": [360, 110],
+      "id": 2, "type": "CLIPLoaderGGUF", "pos": [40, 150], "size": [360, 110],
       "flags": {}, "order": 1, "mode": 0, "inputs": [],
       "outputs": [{"name": "CLIP", "type": "CLIP", "links": [13, 14], "slot_index": 0}],
       "properties": {"Node name for S&R": "CLIPLoader"},
-      "widgets_values": ["umt5_xxl_fp8_e4m3fn_scaled.safetensors", "wan", "default"]
+      "widgets_values": ["umt5-xxl-encoder-Q5_K_M.gguf", "wan", "default"]
     },
     {
       "id": 3, "type": "VAELoader", "pos": [40, 300], "size": [360, 60],
@@ -63,7 +63,7 @@
       "id": 8, "type": "VAEEncode", "pos": [440, 560], "size": [220, 50],
       "flags": {}, "order": 9, "mode": 0,
       "inputs": [
-        {"name": "pixels", "type": "IMAGE", "link": 8},
+        {"name": "pixels", "type": "IMAGE", "link": 24},
         {"name": "vae", "type": "VAE", "link": 9}
       ],
       "outputs": [{"name": "LATENT", "type": "LATENT", "links": [10], "slot_index": 0}],
@@ -178,6 +178,14 @@
       "outputs": [],
       "properties": {"Node name for S&R": "SaveAnimatedWEBP"},
       "widgets_values": ["BerniniR_rv2v_1.3B", 16, false, 90, "default"]
+    },
+    {
+      "id": 20, "type": "ImageScale", "pos": [440, 720], "size": [240, 130],
+      "flags": {}, "order": 4, "mode": 0,
+      "inputs": [{"name": "image", "type": "IMAGE", "link": 8}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [24], "slot_index": 0}],
+      "properties": {"Node name for S&R": "ImageScale"},
+      "widgets_values": ["lanczos", 768, 768, "disabled"]
     }
   ],
   "links": [
@@ -188,7 +196,8 @@
     [5, 6, 0, 17, 4, "LATENT"],
     [6, 1, 0, 11, 0, "MODEL"],
     [7, 11, 0, 12, 0, "MODEL"],
-    [8, 7, 0, 8, 0, "IMAGE"],
+    [8, 7, 0, 20, 0, "IMAGE"],
+    [24, 20, 0, 8, 0, "IMAGE"],
     [9, 3, 0, 8, 1, "VAE"],
     [10, 8, 0, 12, 1, "LATENT"],
     [11, 12, 0, 13, 0, "MODEL"],

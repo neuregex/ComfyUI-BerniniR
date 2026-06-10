@@ -17,11 +17,11 @@
       "widgets_values": ["bernini_r_low_noise_14B-Q4_K_M.gguf"]
     },
     {
-      "id": 3, "type": "CLIPLoader", "pos": [40, 200], "size": [360, 110],
+      "id": 3, "type": "CLIPLoaderGGUF", "pos": [40, 200], "size": [360, 110],
       "flags": {}, "order": 2, "mode": 0, "inputs": [],
       "outputs": [{"name": "CLIP", "type": "CLIP", "links": [3, 4], "slot_index": 0}],
       "properties": {"Node name for S&R": "CLIPLoader"},
-      "widgets_values": ["umt5_xxl_fp8_e4m3fn_scaled.safetensors", "wan", "default"]
+      "widgets_values": ["umt5-xxl-encoder-Q5_K_M.gguf", "wan", "default"]
     },
     {
       "id": 4, "type": "VAELoader", "pos": [40, 340], "size": [360, 60],
