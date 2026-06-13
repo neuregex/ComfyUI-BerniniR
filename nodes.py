@@ -546,12 +546,87 @@ class BerniniRLoadVideo:
         return (torch.from_numpy(np.stack(frames, axis=0)),)   # [T,H,W,C]
 
 
+def _save_video_file(path, frames_u8, fps, fmt):
+    """Escribe frames [T,H,W,3] uint8 a mp4/webm (PyAV) o gif/webp (PIL)."""
+    import numpy as np
+    if fmt in ("mp4", "webm"):
+        import av
+        h, w = int(frames_u8.shape[1]), int(frames_u8.shape[2])
+        w -= w % 2; h -= h % 2  # yuv420p exige dimensiones pares
+        codecs = ["libx264", "mpeg4"] if fmt == "mp4" else ["libvpx-vp9", "libvpx"]
+        last = None
+        for codec in codecs:
+            container = None
+            try:
+                container = av.open(path, mode="w")
+                stream = container.add_stream(codec, rate=int(round(fps)))
+                stream.width, stream.height, stream.pix_fmt = w, h, "yuv420p"
+                for f in frames_u8:
+                    frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(f[:h, :w]), format="rgb24")
+                    for p in stream.encode(frame):
+                        container.mux(p)
+                for p in stream.encode():
+                    container.mux(p)
+                container.close()
+                return
+            except Exception as e:
+                last = e
+                try:
+                    if container is not None:
+                        container.close()
+                except Exception:
+                    pass
+        raise RuntimeError(f"BerniniRSaveVideo: no pude codificar {fmt} ({last}); revisa `pip install av`.")
+    else:  # gif / webp
+        from PIL import Image
+        imgs = [Image.fromarray(f) for f in frames_u8]
+        dur = max(1, int(round(1000.0 / max(fps, 1.0))))
+        imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=dur,
+                     loop=0, format=("WEBP" if fmt == "webp" else "GIF"))
+
+
+class BerniniRSaveVideo:
+    """Guarda un batch IMAGE [T,H,W,C] como vídeo en ComfyUI/output con formato
+    elegible: mp4/webm (PyAV) o gif/webp (PIL). Para edición de vídeo (no webp forzado)."""
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE",),
+            "format": (["mp4", "webm", "gif", "webp"], {"default": "mp4"}),
+            "fps": ("FLOAT", {"default": 16.0, "min": 1.0, "max": 120.0, "step": 1.0}),
+            "filename_prefix": ("STRING", {"default": "BerniniR"}),
+        }}
+
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    CATEGORY = "BerniniR"
+
+    def save(self, images, format, fps, filename_prefix):
+        import numpy as np
+        import folder_paths
+        out_dir = folder_paths.get_output_directory()
+        h, w = int(images.shape[1]), int(images.shape[2])
+        full, name, counter, subfolder, _ = folder_paths.get_save_image_path(filename_prefix, out_dir, w, h)
+        fname = f"{name}_{counter:05}_.{format}"
+        path = os.path.join(full, fname)
+        frames = (images.detach().cpu().float().clamp(0, 1).numpy() * 255.0).round().astype(np.uint8)
+        if frames.ndim == 4 and frames.shape[-1] > 3:
+            frames = frames[..., :3]
+        _save_video_file(path, frames, float(fps), format)
+        item = {"filename": fname, "subfolder": subfolder, "type": "output"}
+        if format in ("gif", "webp"):
+            return {"ui": {"images": [item]}}          # preview nativo de ComfyUI
+        return {"ui": {"berninir_video": [item]}}      # mp4/webm -> lo muestra web/berninir.js
+
+
 NODE_CLASS_MAPPINGS = {
     "BerniniRModelLoader": BerniniRModelLoader,
     "BerniniRVAELoader": BerniniRVAELoader,
     "BerniniRTextEncode": BerniniRTextEncode,
     "BerniniRSourceMedia": BerniniRSourceMedia,
     "BerniniRLoadVideo": BerniniRLoadVideo,
+    "BerniniRSaveVideo": BerniniRSaveVideo,
     "BerniniRSampler": BerniniRSampler,
     "BerniniRDecode": BerniniRDecode,
 }
@@ -562,6 +637,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BerniniRTextEncode": "BerniniR · Text Encode (UMT5 + task prefix)",
     "BerniniRSourceMedia": "BerniniR · Encode Source/Reference",
     "BerniniRLoadVideo": "BerniniR · Load Video (webp/gif/mp4/mov/...)",
+    "BerniniRSaveVideo": "BerniniR · Save Video (mp4/webm/gif/webp)",
     "BerniniRSampler": "BerniniR · Sampler (src-id RoPE + APG)",
     "BerniniRDecode": "BerniniR · VAE Decode",
 }

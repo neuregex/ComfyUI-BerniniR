@@ -195,12 +195,12 @@
       "widgets_values": []
     },
     {
-      "id": 22, "type": "SaveAnimatedWEBP", "pos": [1700, 360], "size": [400, 400],
+      "id": 22, "type": "BerniniRSaveVideo", "pos": [1700, 360], "size": [400, 400],
       "flags": {}, "order": 21, "mode": 0,
       "inputs": [{"name": "images", "type": "IMAGE", "link": 26}],
       "outputs": [],
-      "properties": {"Node name for S&R": "SaveAnimatedWEBP"},
-      "widgets_values": ["BerniniR_rv2v_gguf", 16, false, 90, "default"]
+      "properties": {"Node name for S&R": "BerniniRSaveVideo"},
+      "widgets_values": ["mp4", 16.0, "BerniniR_rv2v_gguf"]
     },
     {
       "id": 23, "type": "ImageScale", "pos": [700, 620], "size": [240, 130],
