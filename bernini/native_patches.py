@@ -55,6 +55,23 @@ def apply_bernini_patches(model_patcher, theta: float = 10000.0):
     head_dim = _head_dim(diff)
     orig_forward_orig = diff.forward_orig          # bound method original (capturado antes del patch)
 
+    # patch_embedding tolerante a dtype: el forward_orig NATIVO de Wan hace
+    # `self.patch_embedding(x.float())`. Con el 1.3B bf16 (ops regulares) el conv recibe
+    # float32 y el bias es bf16 -> "Input type (float) and bias type (BFloat16)". Casteamos
+    # el input al dtype del peso. Cubre la rama sin-streams (t2v + término incondicional del
+    # guider) y la multi-stream. Guarda: solo para pesos float -> no-op en fp8/GGUF (manual_cast).
+    _pe = getattr(diff, "patch_embedding", None)
+    if _pe is not None and not getattr(_pe, "_bernini_dtype_safe", False):
+        _pe_orig_forward = _pe.forward
+        def _pe_dtype_safe(inp, *a, _f=_pe_orig_forward, _pe=_pe, **kw):
+            w = getattr(_pe, "weight", None)
+            if (w is not None and w.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                    and inp.dtype != w.dtype):
+                inp = inp.to(w.dtype)
+            return _f(inp, *a, **kw)
+        _pe.forward = _pe_dtype_safe
+        _pe._bernini_dtype_safe = True
+
     def forward_orig_bernini(x, t, context, clip_fea=None, freqs=None, transformer_options={}, **kwargs):
         streams = transformer_options.get("bernini_streams", None)
         if not streams:
