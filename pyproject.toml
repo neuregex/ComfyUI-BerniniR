@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-berninir"
 description = "ByteDance Bernini-R (Wan2.2-T2V-A14B + source-id RoPE + APG multi-condition guidance) for ComfyUI: t2v/t2i, image & video editing, reference-to-video."
-version = "0.4.0"
+version = "0.4.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [

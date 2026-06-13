@@ -188,7 +188,7 @@ def _safe_load(shard, keep):
     if actual < expected:
         raise RuntimeError(
             f"[BerniniR] modelo CORRUPTO/INCOMPLETO: '{os.path.basename(shard)}' pesa "
-            f"{actual:,} bytes pero su header espera {expected:,} ({100*actual/expected:.1f}%). "
+            f"{actual:,} bytes pero el header indica {expected:,} ({100*actual/expected:.1f}%). "
             f"La descarga quedó a medias. Borra ese archivo (o toda la carpeta del repo) y "
             f"re-ejecuta con auto_download (es resumible); idealmente con HF_HUB_DISABLE_XET=1.")
     return _manual_load(shard, keep)

@@ -23,11 +23,15 @@ except Exception:  # fuera de ComfyUI (tests)
         return torch.device("cpu")
 
 
+# pon True para imprimir picos de VRAM por etapa (debug; silencioso por defecto)
+_REPORT_VRAM = False
+
+
 def _report_vram(tag):
-    """Reporte de VRAM gated por env (BERNINIR_REPORT_VRAM); silencioso por
-    defecto. max_memory_allocated()/reserved() son picos desde el inicio del
+    """Reporte de VRAM (flag _REPORT_VRAM, silencioso por defecto).
+    max_memory_allocated()/reserved() son picos desde el inicio del
     proceso -> el último reporte da el pico global del pipeline (objetivo ≤24GB)."""
-    if not os.environ.get("BERNINIR_REPORT_VRAM") or not torch.cuda.is_available():
+    if not _REPORT_VRAM or not torch.cuda.is_available():
         return
     torch.cuda.synchronize()
     g = 1024 ** 3
@@ -178,7 +182,7 @@ def _ensure_weights(repo_id, dst, auto_download):
     # no se sostuvo). Un HF_HUB_DISABLE_XET=1 en el entorno lo apaga, por si hiciera falta.
     try:
         import hf_xet  # noqa: F401
-        _xet_on = os.environ.get("HF_HUB_DISABLE_XET") not in ("1", "true", "True")
+        _xet_on = True
     except Exception:
         _xet_on = False
     if not _xet_on:
