@@ -441,27 +441,79 @@ class BerniniRDecode:
         return (frames,)
 
 
+_VIDEO_EXTS = (".webp", ".gif", ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
+
+
+def _decode_video_frames(path, cap):
+    """Decodifica un vídeo (mp4/mov/avi/mkv/webm) a lista de arrays float32 [H,W,3]
+    en 0..1. Prueba PyAV, luego OpenCV, luego imageio — el primero instalado.
+    cap=0 -> todos los frames."""
+    import numpy as np
+    fails = []
+    try:
+        import av
+        out = []
+        with av.open(path) as container:
+            for i, frame in enumerate(container.decode(video=0)):
+                if cap and i >= cap:
+                    break
+                out.append(frame.to_ndarray(format="rgb24").astype(np.float32) / 255.0)
+        if out:
+            return out
+    except Exception as e:
+        fails.append(f"av: {e}")
+    try:
+        import cv2
+        out, v = [], cv2.VideoCapture(path)
+        while not cap or len(out) < cap:
+            ok, bgr = v.read()
+            if not ok:
+                break
+            out.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0)
+        v.release()
+        if out:
+            return out
+    except Exception as e:
+        fails.append(f"cv2: {e}")
+    try:
+        import imageio.v3 as iio
+        out = []
+        for i, fr in enumerate(iio.imiter(path)):
+            if cap and i >= cap:
+                break
+            out.append(np.asarray(fr, dtype=np.float32)[..., :3] / 255.0)
+        if out:
+            return out
+    except Exception as e:
+        fails.append(f"imageio: {e}")
+    raise RuntimeError(
+        "BerniniRLoadVideo: no pude decodificar ese vídeo. Instala un backend: "
+        "pip install av (recomendado), opencv-python o imageio[ffmpeg]. "
+        "Detalle por backend -> " + " | ".join(fails))
+
+
 class BerniniRLoadVideo:
-    """Carga frames de un vídeo animado (webp/gif) desde ComfyUI/input como un batch
-    IMAGE [T,H,W,C] en 0..1. Autocontenido (PIL) — NO depende de VideoHelperSuite.
-    Para mp4/avi usa VHS_LoadVideo u otro loader y conéctalo igual a source_video."""
+    """Carga frames de un vídeo desde ComfyUI/input como batch IMAGE [T,H,W,C] en 0..1.
+    webp/gif via PIL (autocontenido); mp4/mov/avi/mkv/webm via PyAV / OpenCV / imageio
+    (el que esté instalado; `pip install av` recomendado)."""
     @classmethod
     def INPUT_TYPES(cls):
-        # Desplegable con los webp/gif animados de ComfyUI/input + botón de subida
-        # (image_upload), igual que LoadImage — sin teclear el nombre a mano.
+        # Desplegable con los vídeos de ComfyUI/input + botón de carga (webp/gif).
+        # Los mp4/mov/etc. colócalos en ComfyUI/input y aparecerán en la lista.
         files = ["source.webp"]
         try:
             import folder_paths
             d = folder_paths.get_input_directory()
             found = sorted(f for f in os.listdir(d)
-                           if os.path.isfile(os.path.join(d, f)) and f.lower().endswith((".webp", ".gif")))
+                           if os.path.isfile(os.path.join(d, f)) and f.lower().endswith(_VIDEO_EXTS))
             if found:
                 files = found
         except Exception:
             pass
         return {"required": {
             "video": (files, {"image_upload": True,
-                      "tooltip": "Archivo animado (webp/gif) en ComfyUI/input — elígelo o súbelo con el botón."}),
+                      "tooltip": "Vídeo en ComfyUI/input (webp/gif/mp4/mov/avi/mkv/webm). "
+                                 "El botón carga webp/gif; para mp4, colócalo en ComfyUI/input."}),
             "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 1024, "tooltip": "Máximo de frames (0 = todos)"}),
         }}
 
@@ -472,19 +524,23 @@ class BerniniRLoadVideo:
 
     def load(self, video, frame_load_cap=0):
         import numpy as np
-        from PIL import Image, ImageSequence
         try:
             import folder_paths
             base = folder_paths.get_input_directory()
         except Exception:
             base = "input"
         path = video if os.path.isabs(video) else os.path.join(base, video)
-        im = Image.open(path)
-        frames = []
-        for i, fr in enumerate(ImageSequence.Iterator(im)):
-            if frame_load_cap and i >= frame_load_cap:
-                break
-            frames.append(np.asarray(fr.convert("RGB"), dtype=np.float32) / 255.0)
+        cap = int(frame_load_cap or 0)
+        if path.lower().endswith((".webp", ".gif")):
+            from PIL import Image, ImageSequence
+            im = Image.open(path)
+            frames = []
+            for i, fr in enumerate(ImageSequence.Iterator(im)):
+                if cap and i >= cap:
+                    break
+                frames.append(np.asarray(fr.convert("RGB"), dtype=np.float32) / 255.0)
+        else:
+            frames = _decode_video_frames(path, cap)
         if not frames:
             raise ValueError(f"BerniniRLoadVideo: sin frames en {path}")
         return (torch.from_numpy(np.stack(frames, axis=0)),)   # [T,H,W,C]
@@ -505,7 +561,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BerniniRVAELoader": "BerniniR · Load VAE (Wan)",
     "BerniniRTextEncode": "BerniniR · Text Encode (UMT5 + task prefix)",
     "BerniniRSourceMedia": "BerniniR · Encode Source/Reference",
-    "BerniniRLoadVideo": "BerniniR · Load Video (webp/gif, no VHS)",
+    "BerniniRLoadVideo": "BerniniR · Load Video (webp/gif/mp4/mov/...)",
     "BerniniRSampler": "BerniniR · Sampler (src-id RoPE + APG)",
     "BerniniRDecode": "BerniniR · VAE Decode",
 }
