@@ -444,10 +444,35 @@ class BerniniRDecode:
 _VIDEO_EXTS = (".webp", ".gif", ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
 
 
-def _decode_video_frames(path, cap):
-    """Decodifica un vídeo (mp4/mov/avi/mkv/webm) a lista de arrays float32 [H,W,3]
-    en 0..1. Prueba PyAV, luego OpenCV, luego imageio — el primero instalado.
-    cap=0 -> todos los frames."""
+_OOM_MSG = ("BerniniRLoadVideo: sin memoria cargando el vídeo. Con frame_load_cap=0 se cargan "
+            "TODOS los frames a resolución original (un clip 4K largo son >10GB en RAM). Usa un "
+            "frame_load_cap finito (p.ej. 33) y/o baja `max_side`.")
+
+
+def _is_oom(e):
+    s = str(e).lower()
+    return (isinstance(e, MemoryError) or "unable to allocate" in s
+            or "out of memory" in s or "cannot allocate" in s)
+
+
+def _scale_uint8(f, max_side):
+    """Reduce un frame uint8 [H,W,3] para que su lado mayor sea <= max_side (0 = sin tocar)."""
+    import numpy as np
+    if not max_side:
+        return f
+    h, w = f.shape[:2]
+    m = max(h, w)
+    if m <= max_side:
+        return f
+    s = max_side / float(m)
+    from PIL import Image
+    return np.asarray(Image.fromarray(f).resize((max(1, round(w * s)), max(1, round(h * s))), Image.BILINEAR))
+
+
+def _decode_video_frames(path, cap, max_side=0):
+    """Decodifica un vídeo (mp4/mov/avi/mkv/webm) a lista de arrays uint8 [H,W,3].
+    PyAV -> OpenCV -> imageio (el primero instalado). cap=0 -> todos los frames;
+    max_side>0 reduce cada frame al cargar (ahorra RAM con 4K)."""
     import numpy as np
     fails = []
     try:
@@ -457,10 +482,12 @@ def _decode_video_frames(path, cap):
             for i, frame in enumerate(container.decode(video=0)):
                 if cap and i >= cap:
                     break
-                out.append(frame.to_ndarray(format="rgb24").astype(np.float32) / 255.0)
+                out.append(_scale_uint8(frame.to_ndarray(format="rgb24"), max_side))
         if out:
             return out
     except Exception as e:
+        if _is_oom(e):
+            raise RuntimeError(_OOM_MSG)
         fails.append(f"av: {e}")
     try:
         import cv2
@@ -469,11 +496,13 @@ def _decode_video_frames(path, cap):
             ok, bgr = v.read()
             if not ok:
                 break
-            out.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0)
+            out.append(_scale_uint8(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), max_side))
         v.release()
         if out:
             return out
     except Exception as e:
+        if _is_oom(e):
+            raise RuntimeError(_OOM_MSG)
         fails.append(f"cv2: {e}")
     try:
         import imageio.v3 as iio
@@ -481,10 +510,12 @@ def _decode_video_frames(path, cap):
         for i, fr in enumerate(iio.imiter(path)):
             if cap and i >= cap:
                 break
-            out.append(np.asarray(fr, dtype=np.float32)[..., :3] / 255.0)
+            out.append(_scale_uint8(np.ascontiguousarray(np.asarray(fr)[..., :3]), max_side))
         if out:
             return out
     except Exception as e:
+        if _is_oom(e):
+            raise RuntimeError(_OOM_MSG)
         fails.append(f"imageio: {e}")
     raise RuntimeError(
         "BerniniRLoadVideo: no pude decodificar ese vídeo. Instala un backend: "
@@ -514,7 +545,10 @@ class BerniniRLoadVideo:
             "video": (files, {"image_upload": True,
                       "tooltip": "Vídeo en ComfyUI/input (webp/gif/mp4/mov/avi/mkv/webm). "
                                  "El botón carga webp/gif; para mp4, colócalo en ComfyUI/input."}),
-            "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 1024, "tooltip": "Máximo de frames (0 = todos)"}),
+            "frame_load_cap": ("INT", {"default": 33, "min": 0, "max": 4096,
+                      "tooltip": "Máximo de frames (0 = todos). Con vídeos largos/4K usa finito (p.ej. 33); 0 puede agotar la RAM."}),
+            "max_side": ("INT", {"default": 1024, "min": 0, "max": 8192,
+                      "tooltip": "Reduce cada frame a este lado mayor al cargar (0 = sin reducir). Ahorra RAM con 4K."}),
         }}
 
     RETURN_TYPES = ("IMAGE",)
@@ -522,7 +556,7 @@ class BerniniRLoadVideo:
     FUNCTION = "load"
     CATEGORY = "BerniniR"
 
-    def load(self, video, frame_load_cap=0):
+    def load(self, video, frame_load_cap=33, max_side=1024):
         import numpy as np
         try:
             import folder_paths
@@ -531,6 +565,7 @@ class BerniniRLoadVideo:
             base = "input"
         path = video if os.path.isabs(video) else os.path.join(base, video)
         cap = int(frame_load_cap or 0)
+        ms = int(max_side or 0)
         if path.lower().endswith((".webp", ".gif")):
             from PIL import Image, ImageSequence
             im = Image.open(path)
@@ -538,12 +573,13 @@ class BerniniRLoadVideo:
             for i, fr in enumerate(ImageSequence.Iterator(im)):
                 if cap and i >= cap:
                     break
-                frames.append(np.asarray(fr.convert("RGB"), dtype=np.float32) / 255.0)
+                frames.append(_scale_uint8(np.asarray(fr.convert("RGB"), dtype=np.uint8), ms))
         else:
-            frames = _decode_video_frames(path, cap)
+            frames = _decode_video_frames(path, cap, ms)
         if not frames:
             raise ValueError(f"BerniniRLoadVideo: sin frames en {path}")
-        return (torch.from_numpy(np.stack(frames, axis=0)),)   # [T,H,W,C]
+        arr = np.stack(frames, axis=0).astype(np.float32) / 255.0
+        return (torch.from_numpy(arr),)   # [T,H,W,C] en 0..1
 
 
 def _save_video_file(path, frames_u8, fps, fmt):
